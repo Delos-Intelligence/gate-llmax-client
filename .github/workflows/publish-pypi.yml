@@ -1,0 +1,36 @@
+# Publish gate-llmax to PyPI.
+#
+# Setup before first use:
+# 1. Create the project on PyPI and configure a Trusted Publisher for this repo/workflow.
+# 2. Uncomment the `permissions` block and the publish step below.
+#
+# `uv build` produces a single wheel + sdist that ship both the `gate` and
+# `gate_common` import packages.
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # permissions:
+    #   id-token: write  # required for PyPI Trusted Publishing
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Build
+        run: uv build
+
+      - name: List dist
+        run: ls -l dist
+
+      # Uncomment to publish (configure PyPI Trusted Publisher first):
+      # - name: Publish to PyPI
+      #   uses: pypa/gh-action-pypi-publish@release/v1
