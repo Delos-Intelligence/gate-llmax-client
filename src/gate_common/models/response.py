@@ -1,0 +1,284 @@
+"""Response models for the Gate LLM Gateway."""
+
+from __future__ import annotations
+
+from typing import Any, Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, computed_field
+
+from ..types import JsonDict, OutputStatus
+from .vision import VisionOCR
+
+
+class ToolFunction(BaseModel):
+    """The function being called by a tool call (OpenAI-shaped)."""
+
+    model_config = ConfigDict(extra="allow")
+    name: str = ""
+    arguments: str = ""
+
+
+class ToolCall(BaseModel):
+    """One tool call requested by the assistant (OpenAI-shaped)."""
+
+    model_config = ConfigDict(extra="allow")
+    id: str = ""
+    type: Literal["function"] = "function"
+    function: ToolFunction = Field(default_factory=ToolFunction)
+
+
+ROUND = 5
+
+
+class RawUsage(BaseModel):
+    """Token usage and cost for a single LLM call."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_input_tokens: int = 0
+    input_cost: float = 0.0
+    output_cost: float = 0.0
+    model: str = ""
+    estimated: bool = False
+    provider: str = ""
+    region: str = ""
+    duration_ms: int = 0
+    ttft_ms: int | None = None
+    operation: str = ""
+
+    @computed_field
+    @property
+    def total_cost(self) -> float:
+        """Total cost of the call."""
+        return round(self.input_cost + self.output_cost, ROUND)
+
+    def __add__(self, other: RawUsage) -> RawUsage:
+        """Combine two usage objects."""
+        return RawUsage(
+            input_tokens=self.input_tokens + other.input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+            cached_input_tokens=self.cached_input_tokens + other.cached_input_tokens,
+            input_cost=round(self.input_cost + other.input_cost, ROUND),
+            output_cost=round(self.output_cost + other.output_cost, ROUND),
+            model=self.model or other.model,
+            estimated=self.estimated or other.estimated,
+            provider=self.provider or other.provider,
+            region=self.region or other.region,
+            duration_ms=self.duration_ms + other.duration_ms,
+            ttft_ms=self.ttft_ms if self.ttft_ms is not None else other.ttft_ms,
+            operation=self.operation or other.operation,
+        )
+
+
+class StreamChunkDelta(BaseModel):
+    """Delta content for a streaming chunk (OpenAI compat)."""
+
+    content: str | None = None
+    tool_calls: list[JsonDict] | None = None
+
+
+class StreamChunkChoice(BaseModel):
+    """Choice for a streaming chunk (OpenAI compat)."""
+
+    delta: StreamChunkDelta
+    finish_reason: str | None = None
+
+
+class StreamChunkUsage(BaseModel):
+    """Usage for a streaming chunk (OpenAI compat)."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+
+class StreamChunk(BaseModel):
+    """Streaming chunk; `.choices` / `.usage` match OpenAI-style events."""
+
+    text: str = ""
+    is_done: bool = False
+    finish_reason: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cached_input_tokens: int | None = None
+    tool_calls_delta: list[JsonDict] | None = None
+    provider: str | None = None
+    region: str | None = None
+    duration_ms: int | None = None
+    ttft_ms: int | None = None
+
+    @property
+    def choices(self) -> list[StreamChunkChoice]:
+        """OpenAI-compatible choices list."""
+        return [
+            StreamChunkChoice(
+                delta=StreamChunkDelta(
+                    content=self.text or None,
+                    tool_calls=self.tool_calls_delta,
+                ),
+                finish_reason=self.finish_reason,
+            ),
+        ]
+
+    @property
+    def usage(self) -> StreamChunkUsage | None:
+        """OpenAI-compatible usage, present only on the final chunk."""
+        if self.input_tokens is not None or self.output_tokens is not None:
+            return StreamChunkUsage(
+                prompt_tokens=self.input_tokens or 0,
+                completion_tokens=self.output_tokens or 0,
+            )
+        return None
+
+    @classmethod
+    def from_openai(cls, chunk: Any) -> StreamChunk:
+        """Build from an OpenAI ChatCompletionChunk."""
+        text = ""
+        is_done = False
+        finish_reason = None
+        input_tokens = None
+        output_tokens = None
+        tool_calls_delta = None
+
+        if chunk.choices:
+            choice = chunk.choices[0]
+            if choice.delta:
+                if choice.delta.content:
+                    text = choice.delta.content
+                if choice.delta.tool_calls:
+                    # Plain dicts so StreamChunk stays JSON-serializable over SSE.
+                    tool_calls_delta = [tc.model_dump() for tc in choice.delta.tool_calls]
+            if choice.finish_reason:
+                is_done = True
+                finish_reason = choice.finish_reason
+
+        cached_input_tokens = None
+        if chunk.usage:
+            input_tokens = getattr(chunk.usage, "prompt_tokens", None)
+            output_tokens = getattr(chunk.usage, "completion_tokens", None)
+            details = getattr(chunk.usage, "prompt_tokens_details", None)
+            if details is not None:
+                cached_input_tokens = getattr(details, "cached_tokens", None)
+
+        return cls(
+            text=text,
+            is_done=is_done,
+            finish_reason=finish_reason,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_input_tokens=cached_input_tokens,
+            tool_calls_delta=tool_calls_delta,
+        )
+
+    @classmethod
+    def from_bedrock_event(cls, event: dict[str, Any]) -> StreamChunk:
+        """Build from an AWS Bedrock streaming event."""
+        event_type = event.get("type", "")
+        text = ""
+        is_done = False
+        finish_reason = None
+        input_tokens = None
+        output_tokens = None
+        cached_input_tokens = None
+
+        if event_type == "content_block_delta":
+            delta = event.get("delta", {})
+            text = delta.get("text", "")
+        elif event_type == "message_start":
+            message = event.get("message", {})
+            usage = message.get("usage", {})
+            # Anthropic reports input_tokens EXCLUDING cached/created; add them back for the true prompt total.
+            cache_read = usage.get("cache_read_input_tokens", 0) or 0
+            cache_creation = usage.get("cache_creation_input_tokens", 0) or 0
+            base_input = usage.get("input_tokens", 0) or 0
+            input_tokens = base_input + cache_read + cache_creation
+            cached_input_tokens = cache_read
+        elif event_type == "message_delta":
+            usage = event.get("usage", {})
+            output_tokens = usage.get("output_tokens")
+            delta = event.get("delta", {})
+            finish_reason = delta.get("stop_reason")
+        elif event_type == "message_stop":
+            is_done = True
+
+        return cls(
+            text=text,
+            is_done=is_done,
+            finish_reason=finish_reason,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_input_tokens=cached_input_tokens,
+        )
+
+
+class GateCallRecord(BaseModel):
+    """Metadata shared by every Gate call (chat, images, audio, tts, embed).
+
+    Covers *what* was done (``model``, ``deployment_id``), *how it went* (``status``,
+    ``latency_ms``), and *what it cost* (``usage``). Payload-specific fields live on
+    the per-endpoint response models (e.g. ``GateResponse.raw_text``, ``ImageResponse.data``).
+    """
+
+    usage: RawUsage = Field(default_factory=RawUsage)
+    model: str = ""
+    deployment_id: UUID | None = None
+    status: OutputStatus = OutputStatus.SUCCESS
+    latency_ms: int = 0
+    cached: bool = Field(default=False, description="True when this response was replayed from the gateway response cache.")
+
+
+class BaseAudioResponse(GateCallRecord):
+    """Shared base for audio-producing responses (TTS speech + generative music/sfx/dialogue)."""
+
+    audio: str = Field(default="", description="Base64-encoded generated audio bytes.")
+
+
+class GateResponse(GateCallRecord):
+    """Response from a chat call — call metadata plus the assistant payload.
+
+    Three orthogonal payload slots:
+
+    - ``raw_text``: assistant text reply (empty string when none).
+    - ``tool_calls``: list of OpenAI-shaped tool call dicts (``None`` when no tools fired).
+    - ``json_object``: structured dict — either set server-side (e.g. vision OCR)
+      or filled by ``RequestBuilder.cast_json()`` after the call. ``None`` by default.
+
+    For Pydantic-typed parsing, use ``RequestBuilder.cast(T)`` — it reads from
+    ``json_object`` first, then falls back to extracting JSON from ``raw_text``.
+    """
+
+    raw_text: str = ""
+    tool_calls: list[ToolCall] | None = None
+    json_object: JsonDict | None = None
+    choices: list[str] | None = Field(
+        default=None,
+        description="All completion texts when `specifics.n` > 1 (`raw_text` is `choices[0]`); None for a single completion.",
+    )
+
+    @classmethod
+    def no_deployment(cls, model: str) -> GateResponse:
+        """Synthetic response for "model unknown or no active deployment"."""
+        return cls(usage=RawUsage(model=model), model=model, status=OutputStatus.NO_DEPLOYMENT)
+
+    @classmethod
+    def timeout(cls, model: str) -> GateResponse:
+        """Synthetic response for a per-model call that exceeded the batch deadline."""
+        return cls(usage=RawUsage(model=model, estimated=True), model=model, status=OutputStatus.TIMEOUT)
+
+
+class VisionGateResponse(GateCallRecord):
+    """Response from a vision OCR call — call metadata plus the typed OCR result."""
+
+    vision: VisionOCR | None = None
+
+
+class MulticallStreamFrame(BaseModel):
+    """One SSE frame from a streaming parallel multicall.
+
+    Emitted in completion order (not request order); use ``index`` to map back
+    to the position in the original ``ParallelTarget.models`` list.
+    """
+
+    index: int
+    model: str
+    response: GateResponse

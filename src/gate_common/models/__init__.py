@@ -1,0 +1,1 @@
+"""Gate Common models."""
