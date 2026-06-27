@@ -4,16 +4,17 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gate-llmax"
-version = "0.2.0"
+version = "0.2.1"
 description = "Gate LLM Gateway – Python client SDK and shared types"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Delos Intelligence" }]
 requires-python = ">=3.12"  # PEP 695 generics need 3.12+
 keywords = ["llm", "gateway", "ai", "openai", "client", "sdk", "pydantic"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",

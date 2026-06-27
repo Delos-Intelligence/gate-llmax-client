@@ -1,5 +1,7 @@
 """Gate Client SDK ergonomic Python interface to the Gate LLM Gateway."""
 
+from importlib.metadata import PackageNotFoundError, version
+
 from gate_llmax.models.audio import AudioRequest, AudioResponse
 from gate_llmax.models.audio_gen import AudioGenMode, AudioGenRequest, AudioGenResponse, AudioMode, DialogueTurn
 from gate_llmax.models.audio_isolation import AudioIsolationRequest, AudioIsolationResponse
@@ -72,6 +74,11 @@ from .request import (
     select_best,
 )
 from .tokens import count, estimate_input_tokens
+
+try:
+    __version__ = version("gate-llmax")
+except PackageNotFoundError:  # running from a source tree without an install
+    __version__ = "0.0.0+unknown"
 
 __all__ = [
     "AudioCallback",
@@ -163,6 +170,7 @@ __all__ = [
     "VisionPoint",
     "VisionWord",
     "ZoneSelection",
+    "__version__",
     "count",
     "estimate_input_tokens",
     "select_best",
