@@ -38,10 +38,11 @@ dev = [
     "ty>=0.0.1a8",
 ]
 
-# The distribution ships two import packages: `gate` (the client SDK) and
-# `gate_common` (the shared Pydantic types both the client and the Gate backend use).
+# Single import package `gate_llmax`: the client SDK (client, request builders,
+# streaming, tokens) plus `gate_llmax.models` + `gate_llmax.types` — the shared
+# Pydantic models / type aliases the Gate backend imports too.
 [tool.hatch.build.targets.wheel]
-packages = ["src/gate", "src/gate_common"]
+packages = ["src/gate_llmax"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

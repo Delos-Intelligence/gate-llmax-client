@@ -9,11 +9,11 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-import gate.client as client_mod
-from gate import GateClient, TextMessage
-from gate_common.models.request import GateRequest, SingleTarget
-from gate_common.models.response import GateResponse, RawUsage
-from gate_common.types import OutputStatus
+import gate_llmax.client as client_mod
+from gate_llmax import GateClient, TextMessage
+from gate_llmax.models.request import GateRequest, SingleTarget
+from gate_llmax.models.response import GateResponse, RawUsage
+from gate_llmax.types import OutputStatus
 
 
 def _send_returning(text: str) -> tuple[Any, dict[str, GateRequest]]:

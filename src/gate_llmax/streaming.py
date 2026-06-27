@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 
 import httpx
 
-from gate_common.models.response import StreamChunk
+from gate_llmax.models.response import StreamChunk
 
 
 class StreamResponse:

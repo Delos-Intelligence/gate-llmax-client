@@ -19,8 +19,8 @@ from __future__ import annotations
 import functools
 from typing import TYPE_CHECKING
 
-from gate_common.models.messages import Message, TextMessage
-from gate_common.types import JsonDict
+from gate_llmax.models.messages import Message, TextMessage
+from gate_llmax.types import JsonDict
 
 if TYPE_CHECKING:
     from tiktoken import Encoding

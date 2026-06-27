@@ -12,16 +12,16 @@ from typing import Literal, Self, overload
 import httpx
 from pydantic import BaseModel
 
-from gate_common.models.audio import AudioRequest, AudioResponse
-from gate_common.models.audio_gen import AudioGenMode, AudioGenRequest, AudioGenResponse, AudioMode, DialogueTurn
-from gate_common.models.audio_isolation import AudioIsolationRequest, AudioIsolationResponse
-from gate_common.models.config import ExtraAttributeName, ModelInfo, ResolveResponse
-from gate_common.models.dubbing import DubbingRequest, DubbingResponse
-from gate_common.models.embed import EmbedRequest, EmbedResponse
-from gate_common.models.images import AspectRatio, ImageData, ImageQuality, ImageRequest, ImageResponse, ImageSize
-from gate_common.models.messages import Message
-from gate_common.models.request import GateRequest, RequestSpecifics, ResolveRequest, ZoneSelection
-from gate_common.models.response import (
+from gate_llmax.models.audio import AudioRequest, AudioResponse
+from gate_llmax.models.audio_gen import AudioGenMode, AudioGenRequest, AudioGenResponse, AudioMode, DialogueTurn
+from gate_llmax.models.audio_isolation import AudioIsolationRequest, AudioIsolationResponse
+from gate_llmax.models.config import ExtraAttributeName, ModelInfo, ResolveResponse
+from gate_llmax.models.dubbing import DubbingRequest, DubbingResponse
+from gate_llmax.models.embed import EmbedRequest, EmbedResponse
+from gate_llmax.models.images import AspectRatio, ImageData, ImageQuality, ImageRequest, ImageResponse, ImageSize
+from gate_llmax.models.messages import Message
+from gate_llmax.models.request import GateRequest, RequestSpecifics, ResolveRequest, ZoneSelection
+from gate_llmax.models.response import (
     GateCallRecord,
     GateResponse,
     MulticallStreamFrame,
@@ -29,11 +29,11 @@ from gate_common.models.response import (
     StreamChunk,
     VisionGateResponse,
 )
-from gate_common.models.responses import ResponsesRequest, ResponsesResponse
-from gate_common.models.tts import TTSFormat, TTSRequest, TTSResponse
-from gate_common.models.video import VideoAspectRatio, VideoDuration, VideoRequest, VideoResolution, VideoResponse
-from gate_common.models.vision import VisionOCRRequest
-from gate_common.types import JsonDict, JsonValue, ReasoningEffort
+from gate_llmax.models.responses import ResponsesRequest, ResponsesResponse
+from gate_llmax.models.tts import TTSFormat, TTSRequest, TTSResponse
+from gate_llmax.models.video import VideoAspectRatio, VideoDuration, VideoRequest, VideoResolution, VideoResponse
+from gate_llmax.models.vision import VisionOCRRequest
+from gate_llmax.types import JsonDict, JsonValue, ReasoningEffort
 
 from .exceptions import (
     GateAuthError,

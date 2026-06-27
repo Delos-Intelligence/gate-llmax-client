@@ -7,9 +7,9 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from gate import GateResponse, JsonGateResponse, JsonRequestBuilder, TypedGateResponse
-from gate.request import CastedRequestBuilder
-from gate_common.types import OutputStatus
+from gate_llmax import GateResponse, JsonGateResponse, JsonRequestBuilder, TypedGateResponse
+from gate_llmax.request import CastedRequestBuilder
+from gate_llmax.types import OutputStatus
 
 
 class Weather(BaseModel):
@@ -57,7 +57,7 @@ def test_server_json_object_is_preferred() -> None:
 
 def test_cast_json_and_cast_force_response_format() -> None:
     """Both `.cast_json()` and `.cast(T)` set response_format so providers force valid JSON."""
-    from gate.request import RequestBuilder
+    from gate_llmax.request import RequestBuilder
 
     base = RequestBuilder.model_construct(client=None, response_format=None)
     assert base.cast_json().response_format == {"type": "json_object"}

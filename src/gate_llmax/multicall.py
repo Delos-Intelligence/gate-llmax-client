@@ -13,8 +13,8 @@ import logging
 from collections.abc import Coroutine
 from typing import Any, TypeVar
 
-from gate_common.models.response import GateResponse, RawUsage
-from gate_common.types import OutputStatus
+from gate_llmax.models.response import GateResponse, RawUsage
+from gate_llmax.types import OutputStatus
 
 logger = logging.getLogger("gate.client.multicall")
 

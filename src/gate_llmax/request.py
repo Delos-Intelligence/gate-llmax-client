@@ -10,14 +10,14 @@ from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from gate_common.models.audio_gen import AudioGenRequest
-from gate_common.models.images import ImageData, ImageRequest, ImageResponse
-from gate_common.models.messages import Message, TextMessage
-from gate_common.models.request import BestTarget, GateRequest, ParallelTarget, RequestSpecifics, SingleTarget, ZoneSelection
-from gate_common.models.response import BaseAudioResponse, GateCallRecord, GateResponse, RawUsage, StreamChunk, ToolCall
-from gate_common.models.tts import TTSRequest, TTSResponse
-from gate_common.models.video import VideoRequest, VideoResponse
-from gate_common.types import JsonDict, OutputStatus
+from gate_llmax.models.audio_gen import AudioGenRequest
+from gate_llmax.models.images import ImageData, ImageRequest, ImageResponse
+from gate_llmax.models.messages import Message, TextMessage
+from gate_llmax.models.request import BestTarget, GateRequest, ParallelTarget, RequestSpecifics, SingleTarget, ZoneSelection
+from gate_llmax.models.response import BaseAudioResponse, GateCallRecord, GateResponse, RawUsage, StreamChunk, ToolCall
+from gate_llmax.models.tts import TTSRequest, TTSResponse
+from gate_llmax.models.video import VideoRequest, VideoResponse
+from gate_llmax.types import JsonDict, OutputStatus
 
 from .exceptions import (
     GateBudgetError,

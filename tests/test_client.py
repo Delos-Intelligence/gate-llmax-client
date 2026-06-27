@@ -25,7 +25,7 @@ import pytest
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
-from gate import (
+from gate_llmax import (
     BaseAudioResponse,
     GateAuthError,
     GateBudgetError,
@@ -38,7 +38,7 @@ from gate import (
     VisionGateResponse,
     VisionOCR,
 )
-from gate_common.types import OutputStatus
+from gate_llmax.types import OutputStatus
 
 TESTS_DIR = Path(__file__).resolve().parent
 load_dotenv(TESTS_DIR / ".env")

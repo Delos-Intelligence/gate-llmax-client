@@ -9,10 +9,10 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
-import gate.client as client_mod
-from gate import GateClient, ToolProgress, ToolResult, ToolStreamItem
-from gate_common.models.response import StreamChunk
-from gate_common.types import JsonDict
+import gate_llmax.client as client_mod
+from gate_llmax import GateClient, ToolProgress, ToolResult, ToolStreamItem
+from gate_llmax.models.response import StreamChunk
+from gate_llmax.types import JsonDict
 
 _TOOL_DELTA: list[JsonDict] = [{"index": 0, "id": "call_1", "function": {"name": "search", "arguments": '{"q": "x"}'}}]
 

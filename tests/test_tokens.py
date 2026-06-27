@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from gate import count
+from gate_llmax import count
 
 # (text, exact cl100k_base token count as pinned by llmax)
 PINNED = [

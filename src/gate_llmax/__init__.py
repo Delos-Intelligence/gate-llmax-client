@@ -1,9 +1,9 @@
 """Gate Client SDK ergonomic Python interface to the Gate LLM Gateway."""
 
-from gate_common.models.audio import AudioRequest, AudioResponse
-from gate_common.models.audio_gen import AudioGenMode, AudioGenRequest, AudioGenResponse, AudioMode, DialogueTurn
-from gate_common.models.audio_isolation import AudioIsolationRequest, AudioIsolationResponse
-from gate_common.models.config import (
+from gate_llmax.models.audio import AudioRequest, AudioResponse
+from gate_llmax.models.audio_gen import AudioGenMode, AudioGenRequest, AudioGenResponse, AudioMode, DialogueTurn
+from gate_llmax.models.audio_isolation import AudioIsolationRequest, AudioIsolationResponse
+from gate_llmax.models.config import (
     DeploymentInfo,
     DeploymentStatus,
     ExtraAttributeName,
@@ -13,12 +13,12 @@ from gate_common.models.config import (
     ResolvedDeployment,
     ResolveResponse,
 )
-from gate_common.models.dubbing import DubbingRequest, DubbingResponse
-from gate_common.models.embed import EmbedObject, EmbedRequest, EmbedResponse
-from gate_common.models.images import ImageData, ImageRequest, ImageResponse
-from gate_common.models.messages import ImageMessage, Message, MessageRole, TextMessage
-from gate_common.models.request import BestTarget, CallControl, RequestSpecifics, ResolveRequest, ZoneSelection
-from gate_common.models.response import (
+from gate_llmax.models.dubbing import DubbingRequest, DubbingResponse
+from gate_llmax.models.embed import EmbedObject, EmbedRequest, EmbedResponse
+from gate_llmax.models.images import ImageData, ImageRequest, ImageResponse
+from gate_llmax.models.messages import ImageMessage, Message, MessageRole, TextMessage
+from gate_llmax.models.request import BestTarget, CallControl, RequestSpecifics, ResolveRequest, ZoneSelection
+from gate_llmax.models.response import (
     BaseAudioResponse,
     GateCallRecord,
     GateResponse,
@@ -29,11 +29,11 @@ from gate_common.models.response import (
     ToolFunction,
     VisionGateResponse,
 )
-from gate_common.models.responses import ResponsesRequest, ResponsesResponse
-from gate_common.models.tts import TTSRequest, TTSResponse
-from gate_common.models.video import VideoRequest, VideoResponse
-from gate_common.models.vision import VisionLine, VisionOCR, VisionOCRRequest, VisionPoint, VisionWord
-from gate_common.types import JsonDict, JsonValue, OutputStatus, ReasoningEffort
+from gate_llmax.models.responses import ResponsesRequest, ResponsesResponse
+from gate_llmax.models.tts import TTSRequest, TTSResponse
+from gate_llmax.models.video import VideoRequest, VideoResponse
+from gate_llmax.models.vision import VisionLine, VisionOCR, VisionOCRRequest, VisionPoint, VisionWord
+from gate_llmax.types import JsonDict, JsonValue, OutputStatus, ReasoningEffort
 
 from .client import GateClient
 from .exceptions import (
