@@ -1,6 +1,6 @@
 # gate-llmax
 
-Python client SDK **and** shared types for the [Gate LLM Gateway](https://github.com/Delos-Intelligence/gate-llmax) — a
+Python client SDK **and** shared types for the [Gate LLM Gateway](https://github.com/Delos-Intelligence/gate-llmax-client) — a
 unified API layer over multiple LLM providers (OpenAI, Azure, Bedrock, Gemini, ElevenLabs).
 
 This package ships two import modules:
@@ -13,7 +13,7 @@ This package ships two import modules:
 ## Install
 
 ```bash
-pip install "gate-llmax @ git+https://github.com/Delos-Intelligence/gate-llmax"
+pip install "gate-llmax @ git+https://github.com/Delos-Intelligence/gate-llmax-client"
 ```
 
 or with uv:
@@ -23,7 +23,7 @@ or with uv:
 dependencies = ["gate-llmax"]
 
 [tool.uv.sources]
-gate-llmax = { git = "https://github.com/Delos-Intelligence/gate-llmax", branch = "main" }
+gate-llmax = { git = "https://github.com/Delos-Intelligence/gate-llmax-client", branch = "main" }
 ```
 
 ## Usage

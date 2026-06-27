@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/Delos-Intelligence/gate-llmax"
+Repository = "https://github.com/Delos-Intelligence/gate-llmax-client"
 
 [dependency-groups]
 dev = [
