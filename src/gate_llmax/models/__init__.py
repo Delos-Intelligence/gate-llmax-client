@@ -1,1 +1,1 @@
-"""Gate Common models."""
+"""Shared Pydantic models for the Gate LLM Gateway."""

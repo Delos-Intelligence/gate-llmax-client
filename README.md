@@ -5,9 +5,9 @@ unified API layer over multiple LLM providers (OpenAI, Azure, Bedrock, Gemini, E
 
 One import package, **`gate_llmax`**:
 
-- **`gate_llmax`** — the ergonomic async client SDK (`GateClient`, request builders, streaming, token counting).
-- **`gate_llmax.models`** + **`gate_llmax.types`** — the shared Pydantic models and type aliases (`GateRequest`,
-  `GateResponse`, `Message`, `ModelInfo`, `StreamChunk`, `OutputStatus`, …). These are the data contracts the Gate
+- **`gate_llmax`** — the ergonomic async client SDK (`LLMClient`, request builders, streaming, token counting).
+- **`gate_llmax.models`** + **`gate_llmax.types`** — the shared Pydantic models and type aliases (`LLMRequest`,
+  `LLMResponse`, `Message`, `ModelInfo`, `StreamChunk`, `OutputStatus`, …). These are the data contracts the Gate
   backend and any client share, so backends import them from here too.
 
 ## Install
@@ -29,9 +29,9 @@ gate-llmax = { git = "https://github.com/Delos-Intelligence/gate-llmax-client", 
 ## Usage
 
 ```python
-from gate_llmax import GateClient
+from gate_llmax import LLMClient
 
-async with GateClient(base_url="https://your-gate-instance.com", api_key="your-key") as client:
+async with LLMClient(base_url="https://your-gate-instance.com", api_key="your-key") as client:
     response = await client.request(prompt="Hello!").call("gpt-4o")
     print(response.raw_text)
 ```
@@ -46,8 +46,8 @@ async for chunk in client.request(prompt="...").call_stream("gpt-4o"):
 Importing shared types directly (e.g. from a backend):
 
 ```python
-from gate_llmax.models.request import GateRequest
-from gate_llmax.models.response import GateResponse
+from gate_llmax.models.request import LLMRequest
+from gate_llmax.models.response import LLMResponse
 from gate_llmax.types import OutputStatus
 ```
 
