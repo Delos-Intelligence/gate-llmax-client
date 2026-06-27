@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import Field
 
 from .request import CallControl
-from .response import GateCallRecord
+from .response import LLMCallRecord
 
 VideoAspectRatio = Literal["16:9", "9:16"]
 VideoDuration = Literal[4, 6, 8]
@@ -37,7 +37,7 @@ class VideoRequest(CallControl):
     end_image: str | None = Field(default=None, description="Base64-encoded last frame.")
 
 
-class VideoResponse(GateCallRecord):
+class VideoResponse(LLMCallRecord):
     """Response from ``/v1/videos`` — Gate call metadata + base64 mp4."""
 
     video: str = Field(default="", description="Base64-encoded video (mp4).")

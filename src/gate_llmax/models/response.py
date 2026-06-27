@@ -211,12 +211,12 @@ class StreamChunk(BaseModel):
         )
 
 
-class GateCallRecord(BaseModel):
+class LLMCallRecord(BaseModel):
     """Metadata shared by every Gate call (chat, images, audio, tts, embed).
 
     Covers *what* was done (``model``, ``deployment_id``), *how it went* (``status``,
     ``latency_ms``), and *what it cost* (``usage``). Payload-specific fields live on
-    the per-endpoint response models (e.g. ``GateResponse.raw_text``, ``ImageResponse.data``).
+    the per-endpoint response models (e.g. ``LLMResponse.raw_text``, ``ImageResponse.data``).
     """
 
     usage: RawUsage = Field(default_factory=RawUsage)
@@ -227,13 +227,13 @@ class GateCallRecord(BaseModel):
     cached: bool = Field(default=False, description="True when this response was replayed from the gateway response cache.")
 
 
-class BaseAudioResponse(GateCallRecord):
+class BaseAudioResponse(LLMCallRecord):
     """Shared base for audio-producing responses (TTS speech + generative music/sfx/dialogue)."""
 
     audio: str = Field(default="", description="Base64-encoded generated audio bytes.")
 
 
-class GateResponse(GateCallRecord):
+class LLMResponse(LLMCallRecord):
     """Response from a chat call — call metadata plus the assistant payload.
 
     Three orthogonal payload slots:
@@ -256,17 +256,17 @@ class GateResponse(GateCallRecord):
     )
 
     @classmethod
-    def no_deployment(cls, model: str) -> GateResponse:
+    def no_deployment(cls, model: str) -> LLMResponse:
         """Synthetic response for "model unknown or no active deployment"."""
         return cls(usage=RawUsage(model=model), model=model, status=OutputStatus.NO_DEPLOYMENT)
 
     @classmethod
-    def timeout(cls, model: str) -> GateResponse:
+    def timeout(cls, model: str) -> LLMResponse:
         """Synthetic response for a per-model call that exceeded the batch deadline."""
         return cls(usage=RawUsage(model=model, estimated=True), model=model, status=OutputStatus.TIMEOUT)
 
 
-class VisionGateResponse(GateCallRecord):
+class VisionLLMResponse(LLMCallRecord):
     """Response from a vision OCR call — call metadata plus the typed OCR result."""
 
     vision: VisionOCR | None = None
@@ -281,4 +281,4 @@ class MulticallStreamFrame(BaseModel):
 
     index: int
     model: str
-    response: GateResponse
+    response: LLMResponse

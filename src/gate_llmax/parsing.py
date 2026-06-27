@@ -73,7 +73,7 @@ def extract_json_from_text(text: str) -> dict[str, Any] | None:  # noqa: PLR0911
 
 
 def parse_gate_text_to_model[T: BaseModel](raw_text: str, model_type: type[T]) -> T | None:
-    """Parse ``GateResponse.raw_text`` into ``model_type`` (JSON extract + ``model_validate``)."""
+    """Parse ``LLMResponse.raw_text`` into ``model_type`` (JSON extract + ``model_validate``)."""
     parsed = extract_json_from_text(raw_text)
     if not parsed:
         return None

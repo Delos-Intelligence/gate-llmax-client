@@ -5,7 +5,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .request import CallControl
-from .response import GateCallRecord
+from .response import LLMCallRecord
 
 
 class DubbingRequest(CallControl):
@@ -26,7 +26,7 @@ class DubbingRequest(CallControl):
     watermark: bool = False
 
 
-class DubbingResponse(GateCallRecord):
+class DubbingResponse(LLMCallRecord):
     """Response from ``/v1/audio/dubbing`` — Gate call metadata + base64 dubbed audio."""
 
     audio: str = Field(default="", description="Base64-encoded dubbed audio (mp3).")

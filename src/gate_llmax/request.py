@@ -1,4 +1,4 @@
-"""RequestBuilder, CastedRequestBuilder, and TypedGateResponse for the Gate client."""
+"""RequestBuilder, CastedRequestBuilder, and TypedLLMResponse for the Gate client."""
 
 from __future__ import annotations
 
@@ -13,25 +13,25 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from gate_llmax.models.audio_gen import AudioGenRequest
 from gate_llmax.models.images import ImageData, ImageRequest, ImageResponse
 from gate_llmax.models.messages import Message, TextMessage
-from gate_llmax.models.request import BestTarget, GateRequest, ParallelTarget, RequestSpecifics, SingleTarget, ZoneSelection
-from gate_llmax.models.response import BaseAudioResponse, GateCallRecord, GateResponse, RawUsage, StreamChunk, ToolCall
+from gate_llmax.models.request import BestTarget, LLMRequest, ParallelTarget, RequestSpecifics, SingleTarget, ZoneSelection
+from gate_llmax.models.response import BaseAudioResponse, LLMCallRecord, LLMResponse, RawUsage, StreamChunk, ToolCall
 from gate_llmax.models.tts import TTSRequest, TTSResponse
 from gate_llmax.models.video import VideoRequest, VideoResponse
 from gate_llmax.types import JsonDict, OutputStatus
 
 from .exceptions import (
-    GateBudgetError,
-    GateConnectionError,
-    GateModelNotFoundError,
-    GateServerError,
-    GateTimeoutError,
+    LLMBudgetError,
+    LLMConnectionError,
+    LLMModelNotFoundError,
+    LLMServerError,
+    LLMTimeoutError,
 )
 from .multicall import execute_multicall
 from .parsing import extract_json_from_text
 from .tokens import count, estimate_input_tokens
 
 if TYPE_CHECKING:
-    from .client import GateClient
+    from .client import LLMClient
 
 logger = logging.getLogger("gate.client.request")
 
@@ -43,7 +43,7 @@ OnUsage = Callable[[RawUsage], Awaitable[None]]
 UsageCallback = Callable[[RawUsage], Awaitable[None]]
 """Endpoint-agnostic callback. Fires once per response with that response's `RawUsage`."""
 
-GateCallback = Callable[[GateResponse], Awaitable[None]]
+LLMCallback = Callable[[LLMResponse], Awaitable[None]]
 ImageCallback = Callable[[ImageResponse], Awaitable[None]]
 AudioCallback = Callable[[BaseAudioResponse], Awaitable[None]]
 VideoCallback = Callable[[VideoResponse], Awaitable[None]]
@@ -78,7 +78,7 @@ Yield ``ToolProgress`` items to surface live progress into the output stream, an
 ``ToolResult`` to feed the result back to the model (``redo=False`` ends the loop)."""
 
 BudgetCheck = Callable[[], Awaitable[bool]]
-"""Pre-call budget gate: returns True to allow the call, False to deny it with `GateBudgetError`."""
+"""Pre-call budget gate: returns True to allow the call, False to deny it with `LLMBudgetError`."""
 
 MAX_TOOL_ITERS = 8
 
@@ -92,8 +92,8 @@ def _conversation_token_count(messages: list[Message]) -> int:
     return sum(count(block.text) for msg in messages for block in msg.content if isinstance(block, TextMessage))
 
 
-def _extract_tool_calls(response: GateResponse) -> tuple[str, list[ToolCall] | None]:
-    """Pull (assistant_text, tool_calls) out of a ``GateResponse``."""
+def _extract_tool_calls(response: LLMResponse) -> tuple[str, list[ToolCall] | None]:
+    """Pull (assistant_text, tool_calls) out of a ``LLMResponse``."""
     return response.raw_text, response.tool_calls
 
 
@@ -200,23 +200,23 @@ async def select_best[I, R](
             task.cancel()
 
 
-class JsonGateResponse(GateResponse):
-    """A ``GateResponse`` whose ``raw_text`` has been parsed into the ``json_response`` dict.
+class JsonLLMResponse(LLMResponse):
+    """A ``LLMResponse`` whose ``raw_text`` has been parsed into the ``json_response`` dict.
 
-    Produced by ``.cast_json()``. ``TypedGateResponse`` extends this, so a typed result is also a
+    Produced by ``.cast_json()``. ``TypedLLMResponse`` extends this, so a typed result is also a
     JSON result (raw_text + json_response + value).
     """
 
     json_response: JsonDict | None = None
 
     @classmethod
-    def of(cls, response: GateResponse, json_response: JsonDict | None = None) -> JsonGateResponse:
-        """Wrap a ``GateResponse`` as a ``JsonGateResponse`` carrying the parsed ``json_response``."""
+    def of(cls, response: LLMResponse, json_response: JsonDict | None = None) -> JsonLLMResponse:
+        """Wrap a ``LLMResponse`` as a ``JsonLLMResponse`` carrying the parsed ``json_response``."""
         return cls.model_construct(**response.__dict__, json_response=json_response)
 
 
-class TypedGateResponse[T: BaseModel](JsonGateResponse):
-    """A ``JsonGateResponse`` plus the parsed Pydantic ``value`` (``None`` when parsing failed).
+class TypedLLMResponse[T: BaseModel](JsonLLMResponse):
+    """A ``JsonLLMResponse`` plus the parsed Pydantic ``value`` (``None`` when parsing failed).
 
     Access response fields directly (``typed.raw_text``, ``typed.json_response``, ``typed.status``)
     and the parsed object via ``typed.value``.
@@ -225,12 +225,12 @@ class TypedGateResponse[T: BaseModel](JsonGateResponse):
     value: T | None = None
 
     @classmethod
-    def of(cls, response: GateResponse, json_response: JsonDict | None = None, value: T | None = None) -> TypedGateResponse[T]:
-        """Wrap a ``GateResponse`` with its parsed ``json_response`` and validated ``value``."""
+    def of(cls, response: LLMResponse, json_response: JsonDict | None = None, value: T | None = None) -> TypedLLMResponse[T]:
+        """Wrap a ``LLMResponse`` with its parsed ``json_response`` and validated ``value``."""
         return cls.model_construct(**response.__dict__, json_response=json_response, value=value)
 
 
-class MediaBuilder[ResponseT: GateCallRecord](BaseModel):
+class MediaBuilder[ResponseT: LLMCallRecord](BaseModel):
     """Shared callback wiring for every request builder.
 
     Holds the gateway handle and both callback lists, and fires them after a response:
@@ -239,7 +239,7 @@ class MediaBuilder[ResponseT: GateCallRecord](BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    client: GateClient
+    client: LLMClient
     callbacks: list[Callable[[ResponseT], Awaitable[None]]] = Field(default_factory=list)
     usage_callbacks: list[UsageCallback] = Field(default_factory=list)
     budget_check: BudgetCheck | None = None
@@ -255,13 +255,13 @@ class MediaBuilder[ResponseT: GateCallRecord](BaseModel):
         return self
 
     def budget(self, check: BudgetCheck) -> Self:
-        """Register a pre-call budget gate; a False result denies the call with ``GateBudgetError``."""
+        """Register a pre-call budget gate; a False result denies the call with ``LLMBudgetError``."""
         self.budget_check = check
         return self
 
     async def _gate_budget(self) -> None:
         if self.budget_check is not None and not await self.budget_check():
-            raise GateBudgetError("Budget exceeded; call denied before dispatch.")
+            raise LLMBudgetError("Budget exceeded; call denied before dispatch.")
 
     async def _fire_usage(self, usage: RawUsage) -> None:
         for cb in self.usage_callbacks:
@@ -273,16 +273,16 @@ class MediaBuilder[ResponseT: GateCallRecord](BaseModel):
             await cb(response)
 
 
-class RequestBuilder[ResponseT: GateResponse](MediaBuilder[GateResponse]):
-    """Fluent helper from `GateClient.request`; not constructed directly.
+class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
+    """Fluent helper from `LLMClient.request`; not constructed directly.
 
-    Generic over the *finalized* result type. The base returns raw ``GateResponse``;
-    ``CastedRequestBuilder`` overrides ``_finalize`` to parse into ``TypedGateResponse[T]``,
+    Generic over the *finalized* result type. The base returns raw ``LLMResponse``;
+    ``CastedRequestBuilder`` overrides ``_finalize`` to parse into ``TypedLLMResponse[T]``,
     so every ``call`` / ``multicall`` / ``call_prefer`` / ``call_best`` variant is inherited
     and correctly typed.
     """
 
-    def _finalize(self, response: GateResponse) -> ResponseT:
+    def _finalize(self, response: LLMResponse) -> ResponseT:
         """Hook turning a raw response into the builder's result type (identity for the base)."""
         return response  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
@@ -377,24 +377,24 @@ class RequestBuilder[ResponseT: GateResponse](MediaBuilder[GateResponse]):
             builder.response_format = {"type": "json_object"}
         return builder
 
-    def cast_json(self) -> JsonRequestBuilder[JsonGateResponse]:
+    def cast_json(self) -> JsonRequestBuilder[JsonLLMResponse]:
         """Return a builder that parses every result's ``raw_text`` into ``json_response`` (a JSON dict).
 
         Sets ``response_format={'type':'json_object'}`` so providers that accept it force valid JSON;
-        the result is a ``JsonGateResponse`` (``raw_text`` + ``json_response``). ``.cast(T)`` is the
+        the result is a ``JsonLLMResponse`` (``raw_text`` + ``json_response``). ``.cast(T)`` is the
         typed extension — it additionally validates the dict into ``T`` (``.value``).
         """
-        builder = JsonRequestBuilder[JsonGateResponse].model_construct(**self.__dict__)
+        builder = JsonRequestBuilder[JsonLLMResponse].model_construct(**self.__dict__)
         builder.cast_json_enabled = True
         if builder.response_format is None:
             builder.response_format = {"type": "json_object"}
         return builder
 
-    def _apply_cast_json(self, response: GateResponse) -> None:
+    def _apply_cast_json(self, response: LLMResponse) -> None:
         if self.cast_json_enabled and response.json_object is None and response.raw_text:
             response.json_object = extract_json_from_text(response.raw_text)
 
-    async def _call_raw(self, model: str) -> GateResponse:
+    async def _call_raw(self, model: str) -> LLMResponse:
         """One non-streaming turn: budget gate → send → cast_json → usage → callbacks. No finalize."""
         await self._gate_budget()
         request = self._build_request(model, stream=False)
@@ -464,7 +464,7 @@ class RequestBuilder[ResponseT: GateResponse](MediaBuilder[GateResponse]):
                 yield chunk
                 if client_paces and chunk.text:
                     await asyncio.sleep(smooth_duration_ms / 1000)
-        except (GateTimeoutError, GateConnectionError):
+        except (LLMTimeoutError, LLMConnectionError):
             estimated = estimate_input_tokens(self.system_prompt, self.messages, self.images)
             usage = RawUsage(model=model, input_tokens=estimated, estimated=True, operation=self.operation)
             if self.on_usage is not None:
@@ -520,7 +520,7 @@ class RequestBuilder[ResponseT: GateResponse](MediaBuilder[GateResponse]):
         models: list[str],
         timeout: float = _DEFAULT_MULTICALL_TIMEOUT,
         specifics_by_model: dict[str, RequestSpecifics] | None = None,
-    ) -> AsyncIterator[tuple[int, GateResponse]]:
+    ) -> AsyncIterator[tuple[int, LLMResponse]]:
         """Streaming variant of ``batch_multicall`` — yields one frame per model completion.
 
         Single HTTP request, image+prompt uploaded once. The server fans out across
@@ -531,7 +531,7 @@ class RequestBuilder[ResponseT: GateResponse](MediaBuilder[GateResponse]):
         ``RawUsage`` (estimated for timed-out models).
         """
         await self._gate_budget()
-        request = GateRequest(
+        request = LLMRequest(
             target=ParallelTarget(models=models, specifics_by_model=specifics_by_model),
             system_prompt=self.system_prompt,
             messages=self.messages,
@@ -572,7 +572,7 @@ class RequestBuilder[ResponseT: GateResponse](MediaBuilder[GateResponse]):
     ) -> list[ResponseT]:
         """Batch endpoint variant — one HTTP request, image+prompt uploaded ONCE.
 
-        Server fans out across `models` and returns one ``GateResponse`` per model in
+        Server fans out across `models` and returns one ``LLMResponse`` per model in
         the same order. Use this in preference to ``multicall`` when images/system_prompt
         are large; saves N× upload bytes.
 
@@ -581,7 +581,7 @@ class RequestBuilder[ResponseT: GateResponse](MediaBuilder[GateResponse]):
         (e.g. Gemini 3 vs Gemini 2.5 thinking-config schemas).
         """
         await self._gate_budget()
-        batch = GateRequest(
+        batch = LLMRequest(
             target=ParallelTarget(models=models, specifics_by_model=specifics_by_model),
             system_prompt=self.system_prompt,
             messages=self.messages,
@@ -619,13 +619,13 @@ class RequestBuilder[ResponseT: GateResponse](MediaBuilder[GateResponse]):
         """Try models in order; advance to the next on failure or non-SUCCESS status.
 
         Fallback triggers (try next model):
-        - ``GateModelNotFoundError`` — model not configured in the gateway.
-        - ``GateServerError`` — 5xx response from the gateway.
-        - ``GateTimeoutError`` — HTTP-level timeout before the server replied.
+        - ``LLMModelNotFoundError`` — model not configured in the gateway.
+        - ``LLMServerError`` — 5xx response from the gateway.
+        - ``LLMTimeoutError`` — HTTP-level timeout before the server replied.
         - Response with ``status != SUCCESS`` (server ran but reported failure).
 
         Immediate re-raise (not model-specific, no fallback):
-        - ``GateAuthError``, ``GateCapabilityError``, ``GateConnectionError``.
+        - ``LLMAuthError``, ``LLMCapabilityError``, ``LLMConnectionError``.
 
         When an exception triggers a fallback, ``on_usage`` is called with
         estimated input tokens (``estimated=True``) for the failed attempt.
@@ -637,7 +637,7 @@ class RequestBuilder[ResponseT: GateResponse](MediaBuilder[GateResponse]):
         models are exhausted, or a ``NO_DEPLOYMENT`` response if ``models`` is
         empty or every attempt raised an exception.
         """
-        _fallback_exc = (GateModelNotFoundError, GateServerError, GateTimeoutError)
+        _fallback_exc = (LLMModelNotFoundError, LLMServerError, LLMTimeoutError)
         estimated_input = estimate_input_tokens(self.system_prompt, self.messages, self.images)
         last: ResponseT | None = None
         for model in models:
@@ -653,7 +653,7 @@ class RequestBuilder[ResponseT: GateResponse](MediaBuilder[GateResponse]):
                     await self.on_usage(RawUsage(model=model, input_tokens=estimated_input, estimated=True, operation=self.operation))
         if last is not None:
             return last
-        return self._finalize(GateResponse(model=models[-1] if models else "", status=OutputStatus.NO_DEPLOYMENT))
+        return self._finalize(LLMResponse(model=models[-1] if models else "", status=OutputStatus.NO_DEPLOYMENT))
 
     def call_prefer_sync(self, models: list[str]) -> ResponseT:
         """Blocking wrapper for `call_prefer`."""
@@ -663,16 +663,16 @@ class RequestBuilder[ResponseT: GateResponse](MediaBuilder[GateResponse]):
         """``call`` that converts model-specific failures into a ``NO_DEPLOYMENT`` result."""
         try:
             return await self.call(model)
-        except (GateModelNotFoundError, GateServerError, GateTimeoutError) as exc:
+        except (LLMModelNotFoundError, LLMServerError, LLMTimeoutError) as exc:
             logger.warning("call_best: model=%s failed (%s), excluded", model, exc)
-            return self._finalize(GateResponse(model=model, status=OutputStatus.NO_DEPLOYMENT))
+            return self._finalize(LLMResponse(model=model, status=OutputStatus.NO_DEPLOYMENT))
 
     async def _call_best_server(
         self, models: list[str], attribute: str, direction: Literal["greatest", "lowest"], timeout: float
     ) -> ResponseT:
         """Server-side best: one request fans out across `models`, returns the SUCCESS ranked best by `extra_attributes[attribute]`."""
         await self._gate_budget()
-        request = GateRequest(
+        request = LLMRequest(
             target=BestTarget(models=models, attribute=attribute, direction=direction),
             system_prompt=self.system_prompt,
             messages=self.messages,
@@ -725,7 +725,7 @@ class RequestBuilder[ResponseT: GateResponse](MediaBuilder[GateResponse]):
             msg = "Pass either `greatest` or `lowest`, not both."
             raise ValueError(msg)
         if not models:
-            return self._finalize(GateResponse(model="", status=OutputStatus.NO_DEPLOYMENT))
+            return self._finalize(LLMResponse(model="", status=OutputStatus.NO_DEPLOYMENT))
         if greatest is not None:
             return await self._call_best_server(models, greatest, "greatest", timeout)
         if lowest is not None:
@@ -738,7 +738,7 @@ class RequestBuilder[ResponseT: GateResponse](MediaBuilder[GateResponse]):
             accept=accept,
             timeout=timeout,
         )
-        return best[1] if best is not None else self._finalize(GateResponse(model=models[-1], status=OutputStatus.NO_DEPLOYMENT))
+        return best[1] if best is not None else self._finalize(LLMResponse(model=models[-1], status=OutputStatus.NO_DEPLOYMENT))
 
     def call_best_sync(
         self,
@@ -753,14 +753,14 @@ class RequestBuilder[ResponseT: GateResponse](MediaBuilder[GateResponse]):
         """Blocking wrapper for `call_best`."""
         return asyncio.run(self.call_best(models, key=key, accept=accept, greatest=greatest, lowest=lowest, timeout=timeout))
 
-    async def _call_tool_loop(self, model: str) -> GateResponse:
+    async def _call_tool_loop(self, model: str) -> LLMResponse:
         """Non-streaming tool loop; returns the raw final turn with usage aggregated across turns."""
         executor = self.tool_executor
         if executor is None:
             return await self._call_raw(model)
         messages = list(self.messages)
         total = RawUsage(model=model, operation=self.operation)
-        last: GateResponse | None = None
+        last: LLMResponse | None = None
         for _ in range(self.tool_max_iters):
             allow_tools = self.tool_max_tokens_before_use is None or _conversation_token_count(messages) <= self.tool_max_tokens_before_use
             turn_messages = messages if allow_tools else [*messages, Message.user(_TOOL_BUDGET_EXCEEDED_NOTE)]
@@ -782,7 +782,7 @@ class RequestBuilder[ResponseT: GateResponse](MediaBuilder[GateResponse]):
         if last is not None:
             last.usage = total
             return last
-        return GateResponse(model=model, status=OutputStatus.NO_DEPLOYMENT)
+        return LLMResponse(model=model, status=OutputStatus.NO_DEPLOYMENT)
 
     async def _stream_tool_loop(
         self,
@@ -886,8 +886,8 @@ class RequestBuilder[ResponseT: GateResponse](MediaBuilder[GateResponse]):
             if not retrigger:
                 return
 
-    def _build_request(self, model: str, stream: bool, *, smooth_server_side: bool = False, smooth_duration_ms: int = 0) -> GateRequest:
-        return GateRequest(
+    def _build_request(self, model: str, stream: bool, *, smooth_server_side: bool = False, smooth_duration_ms: int = 0) -> LLMRequest:
+        return LLMRequest(
             target=SingleTarget(model=model),
             system_prompt=self.system_prompt,
             messages=self.messages,
@@ -910,23 +910,23 @@ class RequestBuilder[ResponseT: GateResponse](MediaBuilder[GateResponse]):
         )
 
 
-class JsonRequestBuilder[ResponseT: JsonGateResponse](RequestBuilder[ResponseT]):
+class JsonRequestBuilder[ResponseT: JsonLLMResponse](RequestBuilder[ResponseT]):
     """Intermediary tier: parses each result's ``raw_text`` into ``json_response``.
 
     ``.cast_json()`` yields this; ``.cast(T)`` (``CastedRequestBuilder``) extends it with a typed value.
     """
 
-    def _parsed_json(self, response: GateResponse) -> JsonDict | None:
+    def _parsed_json(self, response: LLMResponse) -> JsonDict | None:
         """The effective JSON dict: server-set ``json_object`` if present, else parsed from ``raw_text``."""
         if response.json_object is not None:
             return response.json_object
         return extract_json_from_text(response.raw_text) if response.raw_text else None
 
-    def _finalize(self, response: GateResponse) -> ResponseT:
-        return JsonGateResponse.of(response, self._parsed_json(response))  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
+    def _finalize(self, response: LLMResponse) -> ResponseT:
+        return JsonLLMResponse.of(response, self._parsed_json(response))  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
 
-class CastedRequestBuilder[T: BaseModel](JsonRequestBuilder[TypedGateResponse[T]]):
+class CastedRequestBuilder[T: BaseModel](JsonRequestBuilder[TypedLLMResponse[T]]):
     """Typed builder: a JSON request that also validates the parsed dict into ``T`` (``.value``).
 
     Inherits every ``call`` / ``multicall`` / ``call_prefer`` / ``call_best`` variant and only
@@ -936,7 +936,7 @@ class CastedRequestBuilder[T: BaseModel](JsonRequestBuilder[TypedGateResponse[T]
 
     model_type: type[T]
 
-    def _finalize(self, response: GateResponse) -> TypedGateResponse[T]:
+    def _finalize(self, response: LLMResponse) -> TypedLLMResponse[T]:
         parsed = self._parsed_json(response)
         value: T | None = None
         if response.status == OutputStatus.SUCCESS and parsed is not None:
@@ -944,7 +944,7 @@ class CastedRequestBuilder[T: BaseModel](JsonRequestBuilder[TypedGateResponse[T]
                 value = self.model_type.model_validate(parsed)
             except ValidationError:
                 value = None
-        return TypedGateResponse.of(response, parsed, value)
+        return TypedLLMResponse.of(response, parsed, value)
 
 
 # ---------------------------------------------------------------------------
@@ -953,7 +953,7 @@ class CastedRequestBuilder[T: BaseModel](JsonRequestBuilder[TypedGateResponse[T]
 
 
 class ImageRequestBuilder(MediaBuilder[ImageResponse]):
-    """Fluent helper from ``GateClient.image_request``; ``.call(model)`` / ``.call_stream(model)`` send it."""
+    """Fluent helper from ``LLMClient.image_request``; ``.call(model)`` / ``.call_stream(model)`` send it."""
 
     request: ImageRequest
 
@@ -985,7 +985,7 @@ class ImageRequestBuilder(MediaBuilder[ImageResponse]):
 
 
 class TTSRequestBuilder(MediaBuilder[BaseAudioResponse]):
-    """Speech builder from ``GateClient.audio_request(mode='speech')``; supports ``.call`` and ``.call_stream``."""
+    """Speech builder from ``LLMClient.audio_request(mode='speech')``; supports ``.call`` and ``.call_stream``."""
 
     request: TTSRequest
 
@@ -1016,7 +1016,7 @@ class TTSRequestBuilder(MediaBuilder[BaseAudioResponse]):
 
 
 class AudioGenRequestBuilder(MediaBuilder[BaseAudioResponse]):
-    """Generative-audio builder from ``GateClient.audio_request(mode='music'|'sound_effects'|'dialogue')``."""
+    """Generative-audio builder from ``LLMClient.audio_request(mode='music'|'sound_effects'|'dialogue')``."""
 
     request: AudioGenRequest
 
@@ -1033,7 +1033,7 @@ class AudioGenRequestBuilder(MediaBuilder[BaseAudioResponse]):
 
 
 class VideoRequestBuilder(MediaBuilder[VideoResponse]):
-    """Fluent helper from ``GateClient.video_request``; ``.call(model)`` sends it (long-running, no stream)."""
+    """Fluent helper from ``LLMClient.video_request``; ``.call(model)`` sends it (long-running, no stream)."""
 
     request: VideoRequest
 
@@ -1050,7 +1050,7 @@ class VideoRequestBuilder(MediaBuilder[VideoResponse]):
         return asyncio.run(self.call(model))
 
 
-class DirectRequestBuilder[ResponseT: GateCallRecord](MediaBuilder[ResponseT]):
+class DirectRequestBuilder[ResponseT: LLMCallRecord](MediaBuilder[ResponseT]):
     """One-shot builder for the non-streaming data endpoints (embed / transcribe / isolation / dub / vision / responses).
 
     Carries only its endpoint config; ``call`` resolves the model then defers budget gating,

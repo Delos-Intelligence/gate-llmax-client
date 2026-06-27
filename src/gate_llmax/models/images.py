@@ -12,7 +12,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from .request import CallControl
-from .response import GateCallRecord
+from .response import LLMCallRecord
 
 AspectRatio = Literal["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]
 ImageQuality = Literal["low", "medium", "high", "auto"]
@@ -90,7 +90,7 @@ class ImageData(BaseModel):
     )
 
 
-class ImageResponse(GateCallRecord):
+class ImageResponse(LLMCallRecord):
     """Response from ``/v1/images`` — Gate call metadata + generated images."""
 
     data: list[ImageData] = Field(default_factory=list)

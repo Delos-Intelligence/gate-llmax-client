@@ -5,7 +5,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from ..models.request import CallControl
-from ..models.response import GateCallRecord
+from ..models.response import LLMCallRecord
 
 
 class AudioRequest(CallControl):
@@ -19,7 +19,7 @@ class AudioRequest(CallControl):
     temperature: float | None = Field(default=None, description="Sampling temperature for transcription (0-1).")
 
 
-class AudioResponse(GateCallRecord):
+class AudioResponse(LLMCallRecord):
     """Response from ``/v1/audio/transcriptions`` — Gate call metadata + transcript text."""
 
     text: str = ""

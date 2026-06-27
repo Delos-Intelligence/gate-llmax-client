@@ -1,4 +1,4 @@
-"""GateClient – main entry point for the Gate Python SDK."""
+"""LLMClient – main entry point for the Gate Python SDK."""
 
 from __future__ import annotations
 
@@ -20,14 +20,14 @@ from gate_llmax.models.dubbing import DubbingRequest, DubbingResponse
 from gate_llmax.models.embed import EmbedRequest, EmbedResponse
 from gate_llmax.models.images import AspectRatio, ImageData, ImageQuality, ImageRequest, ImageResponse, ImageSize
 from gate_llmax.models.messages import Message
-from gate_llmax.models.request import GateRequest, RequestSpecifics, ResolveRequest, ZoneSelection
+from gate_llmax.models.request import LLMRequest, RequestSpecifics, ResolveRequest, ZoneSelection
 from gate_llmax.models.response import (
-    GateCallRecord,
-    GateResponse,
+    LLMCallRecord,
+    LLMResponse,
     MulticallStreamFrame,
     RawUsage,
     StreamChunk,
-    VisionGateResponse,
+    VisionLLMResponse,
 )
 from gate_llmax.models.responses import ResponsesRequest, ResponsesResponse
 from gate_llmax.models.tts import TTSFormat, TTSRequest, TTSResponse
@@ -36,13 +36,13 @@ from gate_llmax.models.vision import VisionOCRRequest
 from gate_llmax.types import JsonDict, JsonValue, ReasoningEffort
 
 from .exceptions import (
-    GateAuthError,
-    GateCapabilityError,
-    GateConnectionError,
-    GateEscapeHatchWarning,
-    GateModelNotFoundError,
-    GateServerError,
-    GateTimeoutError,
+    LLMAuthError,
+    LLMCapabilityError,
+    LLMConnectionError,
+    LLMEscapeHatchWarning,
+    LLMModelNotFoundError,
+    LLMServerError,
+    LLMTimeoutError,
 )
 from .request import (
     AudioGenRequestBuilder,
@@ -61,7 +61,7 @@ _DEFAULT_TIMEOUT = 120.0
 MEDIA_CLIENT_TIMEOUT = 630.0  # dubbing/video are long-running; outlast the server-side wait
 
 
-class GateClient:
+class LLMClient:
     """HTTP client for the Gate gateway; use `.request(...).call(model)` and variants."""
 
     _api_key: str
@@ -109,14 +109,14 @@ class GateClient:
                 instead of repeating ``.usage_callback(...)`` per request. Per-call
                 ``.usage_callback(...)`` adds to (does not replace) this default.
             budget: Default pre-call gate applied to every call; a ``False`` result raises
-                ``GateBudgetError`` before dispatch. Per-call ``.budget(...)`` overrides it.
+                ``LLMBudgetError`` before dispatch. Per-call ``.budget(...)`` overrides it.
             default_zone_selection: Default zone filter for every ``.request(...)`` call
                 (chat routing only); per-call ``.zone(...)`` overrides it.
             seed_routing: Default deterministic-routing seed (e.g. ``(org_id, user_id)``) pinning a
                 principal's calls to one deployment; per-call ``seed_routing=`` overrides it.
             httpx_aclient: Optional shared async HTTP client.  When provided the
                 caller owns its lifecycle and ``close()`` will not close it.
-                Useful to share a single connection pool across many ``GateClient``
+                Useful to share a single connection pool across many ``LLMClient``
                 instances and avoid the memory-leak behaviour of repeatedly
                 creating/destroying ``httpx.AsyncClient`` objects.
         """
@@ -154,7 +154,7 @@ class GateClient:
         operation: str = "",
         seed_routing: object | None = None,
         cache_ttl: int | None = None,
-    ) -> RequestBuilder[GateResponse]:
+    ) -> RequestBuilder[LLMResponse]:
         """Build a request builder with the given parameters.
 
         Args:
@@ -194,7 +194,7 @@ class GateClient:
         resolved_specifics = specifics or RequestSpecifics()
         if resolved_specifics.temperature is None and self._default_temperature is not None:
             resolved_specifics = resolved_specifics.model_copy(update={"temperature": self._default_temperature})
-        return RequestBuilder[GateResponse](
+        return RequestBuilder[LLMResponse](
             client=self,
             system_prompt=system_prompt,
             messages=resolved_messages,
@@ -226,7 +226,7 @@ class GateClient:
         timeout: int | None = None,
         seed_routing: object | None = None,
         specifics: RequestSpecifics | None = None,
-    ) -> RequestBuilder[GateResponse]:
+    ) -> RequestBuilder[LLMResponse]:
         """Terse ``.request(...)`` for the common case: flat tuning kwargs instead of a ``RequestSpecifics``.
 
         Returns a normal ``RequestBuilder`` — the model goes on the shared terminal (``.call`` /
@@ -250,7 +250,7 @@ class GateClient:
             seed_routing=seed_routing,
         )
 
-    def _direct_builder[T: GateCallRecord](
+    def _direct_builder[T: LLMCallRecord](
         self,
         request: BaseModel,
         path: str,
@@ -511,9 +511,9 @@ class GateClient:
         ``input`` is a string or list of input items; only ``input`` / ``extra_body`` are forwarded.
         """
         warnings.warn(
-            "GateClient.responses_request() is an escape hatch that bypasses Gate's unified request/usage "
+            "LLMClient.responses_request() is an escape hatch that bypasses Gate's unified request/usage "
             "handling; prefer .request(...).call(...) or .with_tools(...).",
-            GateEscapeHatchWarning,
+            LLMEscapeHatchWarning,
             stacklevel=2,
         )
         request = ResponsesRequest(model="", input=input, extra_body=extra_body, operation=operation, max_tries=max_tries, timeout=timeout)
@@ -526,10 +526,10 @@ class GateClient:
         *,
         max_tries: int | None = None,
         timeout: int | None = None,
-    ) -> DirectRequestBuilder[VisionGateResponse]:
+    ) -> DirectRequestBuilder[VisionLLMResponse]:
         """Fluent builder for vision OCR; ``.call(model)`` sends it. ``images`` are base64-encoded."""
         request = VisionOCRRequest(model="", images=images, max_tries=max_tries, timeout=timeout)
-        return self._direct_builder(request, "/v1/vision/ocr", "Vision OCR", VisionGateResponse)
+        return self._direct_builder(request, "/v1/vision/ocr", "Vision OCR", VisionLLMResponse)
 
     def image_request(
         self,
@@ -622,7 +622,7 @@ class GateClient:
         """POST a Pydantic request as JSON, mapping transport errors uniformly.
 
         Shared by the non-streaming media endpoints; ``label`` is woven into the
-        raised ``GateTimeoutError`` / ``GateConnectionError`` messages.
+        raised ``LLMTimeoutError`` / ``LLMConnectionError`` messages.
         """
         try:
             response = await self._http.post(
@@ -632,9 +632,9 @@ class GateClient:
                 timeout=client_timeout if client_timeout is not None else self._timeout,
             )
         except httpx.TimeoutException as exc:
-            raise GateTimeoutError(f"{label} request timed out: {exc}") from exc
+            raise LLMTimeoutError(f"{label} request timed out: {exc}") from exc
         except httpx.ConnectError as exc:
-            raise GateConnectionError(f"Could not connect to gateway: {exc}") from exc
+            raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
         _raise_for_status(response)
         return response
 
@@ -643,8 +643,8 @@ class GateClient:
         response = await self._post_json("/v1/audio/generations", request, "Audio generation", client_timeout=MEDIA_CLIENT_TIMEOUT)
         return AudioGenResponse.model_validate(response.json())
 
-    async def _send(self, request: GateRequest) -> GateResponse:
-        """POST to /v1/chat/completions and return a ``GateResponse``."""
+    async def _send(self, request: LLMRequest) -> LLMResponse:
+        """POST to /v1/chat/completions and return a ``LLMResponse``."""
         try:
             response = await self._http.post(
                 "/v1/chat/completions",
@@ -652,14 +652,14 @@ class GateClient:
                 headers={"Content-Type": "application/json"},
             )
         except httpx.TimeoutException as exc:
-            raise GateTimeoutError(f"Request timed out: {exc}") from exc
+            raise LLMTimeoutError(f"Request timed out: {exc}") from exc
         except httpx.ConnectError as exc:
-            raise GateConnectionError(f"Could not connect to gateway: {exc}") from exc
+            raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
 
         _raise_for_status(response)
-        return GateResponse.model_validate(response.json())
+        return LLMResponse.model_validate(response.json())
 
-    async def _send_batch(self, request: GateRequest) -> list[GateResponse]:
+    async def _send_batch(self, request: LLMRequest) -> list[LLMResponse]:
         """POST to /v1/chat/completions with a parallel target — single wire payload, N responses."""
         # Server-side batch wall-clock is `batch_timeout`; client-side httpx timeout must also accommodate it.
         client_timeout = (request.batch_timeout or 180.0) + 30.0
@@ -671,14 +671,14 @@ class GateClient:
                 timeout=client_timeout,
             )
         except httpx.TimeoutException as exc:
-            raise GateTimeoutError(f"Batch request timed out: {exc}") from exc
+            raise LLMTimeoutError(f"Batch request timed out: {exc}") from exc
         except httpx.ConnectError as exc:
-            raise GateConnectionError(f"Could not connect to gateway: {exc}") from exc
+            raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
 
         _raise_for_status(response)
-        return [GateResponse.model_validate(item) for item in response.json()]
+        return [LLMResponse.model_validate(item) for item in response.json()]
 
-    async def _stream_batch(self, request: GateRequest) -> AsyncIterator[MulticallStreamFrame]:
+    async def _stream_batch(self, request: LLMRequest) -> AsyncIterator[MulticallStreamFrame]:
         """POST with stream=True + ParallelTarget; yield one frame per model completion (in completion order)."""
         client_timeout = (request.batch_timeout or 180.0) + 30.0
         try:
@@ -708,11 +708,11 @@ class GateClient:
                     except ValueError:
                         continue
         except httpx.TimeoutException as exc:
-            raise GateTimeoutError(f"Multicall stream timed out: {exc}") from exc
+            raise LLMTimeoutError(f"Multicall stream timed out: {exc}") from exc
         except httpx.ConnectError as exc:
-            raise GateConnectionError(f"Could not connect to gateway: {exc}") from exc
+            raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
 
-    async def _stream(self, request: GateRequest) -> AsyncIterator[StreamChunk]:
+    async def _stream(self, request: LLMRequest) -> AsyncIterator[StreamChunk]:
         """POST with stream=True and yield StreamChunks via SSE."""
         try:
             async with self._http.stream(
@@ -728,9 +728,9 @@ class GateClient:
                 async for chunk in stream:
                     yield chunk
         except httpx.TimeoutException as exc:
-            raise GateTimeoutError(f"Stream timed out: {exc}") from exc
+            raise LLMTimeoutError(f"Stream timed out: {exc}") from exc
         except httpx.ConnectError as exc:
-            raise GateConnectionError(f"Could not connect to gateway: {exc}") from exc
+            raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
 
     async def _send_video(self, request: VideoRequest) -> VideoResponse:
         """POST to /v1/videos and return a ``VideoResponse`` (long-running)."""
@@ -746,9 +746,9 @@ class GateClient:
                 headers={"Content-Type": "application/json"},
             )
         except httpx.TimeoutException as exc:
-            raise GateTimeoutError(f"Images request timed out: {exc}") from exc
+            raise LLMTimeoutError(f"Images request timed out: {exc}") from exc
         except httpx.ConnectError as exc:
-            raise GateConnectionError(f"Could not connect to gateway: {exc}") from exc
+            raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
         _raise_for_status(response)
         return ImageResponse.model_validate(response.json())
 
@@ -785,9 +785,9 @@ class GateClient:
                     except ValueError:
                         continue
         except httpx.TimeoutException as exc:
-            raise GateTimeoutError(f"Images stream timed out: {exc}") from exc
+            raise LLMTimeoutError(f"Images stream timed out: {exc}") from exc
         except httpx.ConnectError as exc:
-            raise GateConnectionError(f"Could not connect to gateway: {exc}") from exc
+            raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
 
     async def _send_tts(self, request: TTSRequest) -> TTSResponse:
         """POST to /v1/audio/speech and return a ``TTSResponse``."""
@@ -798,9 +798,9 @@ class GateClient:
                 headers={"Content-Type": "application/json"},
             )
         except httpx.TimeoutException as exc:
-            raise GateTimeoutError(f"TTS request timed out: {exc}") from exc
+            raise LLMTimeoutError(f"TTS request timed out: {exc}") from exc
         except httpx.ConnectError as exc:
-            raise GateConnectionError(f"Could not connect to gateway: {exc}") from exc
+            raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
         _raise_for_status(response)
         return TTSResponse.model_validate(response.json())
 
@@ -820,9 +820,9 @@ class GateClient:
                     if chunk:
                         yield chunk
         except httpx.TimeoutException as exc:
-            raise GateTimeoutError(f"TTS stream timed out: {exc}") from exc
+            raise LLMTimeoutError(f"TTS stream timed out: {exc}") from exc
         except httpx.ConnectError as exc:
-            raise GateConnectionError(f"Could not connect to gateway: {exc}") from exc
+            raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
 
     async def close(self) -> None:
         """Close the underlying HTTP client.
@@ -841,12 +841,12 @@ class GateClient:
         await self.close()
 
 
-RequestBuilder.model_rebuild(_types_namespace={"GateClient": GateClient})
-ImageRequestBuilder.model_rebuild(_types_namespace={"GateClient": GateClient})
-TTSRequestBuilder.model_rebuild(_types_namespace={"GateClient": GateClient})
-AudioGenRequestBuilder.model_rebuild(_types_namespace={"GateClient": GateClient})
-VideoRequestBuilder.model_rebuild(_types_namespace={"GateClient": GateClient})
-DirectRequestBuilder.model_rebuild(_types_namespace={"GateClient": GateClient})
+RequestBuilder.model_rebuild(_types_namespace={"LLMClient": LLMClient})
+ImageRequestBuilder.model_rebuild(_types_namespace={"LLMClient": LLMClient})
+TTSRequestBuilder.model_rebuild(_types_namespace={"LLMClient": LLMClient})
+AudioGenRequestBuilder.model_rebuild(_types_namespace={"LLMClient": LLMClient})
+VideoRequestBuilder.model_rebuild(_types_namespace={"LLMClient": LLMClient})
+DirectRequestBuilder.model_rebuild(_types_namespace={"LLMClient": LLMClient})
 
 
 def seed_to_token(seed: object | None) -> str | None:
@@ -860,13 +860,13 @@ def _raise_for_status(response: httpx.Response) -> None:
     """Map HTTP error codes to Gate exceptions."""
     code = response.status_code
     if code == 401:
-        raise GateAuthError("Invalid or missing API key")
+        raise LLMAuthError("Invalid or missing API key")
     if code == 404:
-        raise GateModelNotFoundError(_extract_detail(response.text))
+        raise LLMModelNotFoundError(_extract_detail(response.text))
     if code == 422:
-        raise GateCapabilityError(_extract_detail(response.text))
+        raise LLMCapabilityError(_extract_detail(response.text))
     if code >= 500:
-        raise GateServerError(f"Gateway server error {code}: {_extract_detail(response.text)}")
+        raise LLMServerError(f"Gateway server error {code}: {_extract_detail(response.text)}")
     if code >= 400:
         response.raise_for_status()
 

@@ -12,7 +12,7 @@ from pydantic import Field
 
 from ..types import JsonDict, JsonValue
 from .request import CallControl
-from .response import GateCallRecord
+from .response import LLMCallRecord
 
 
 class ResponsesRequest(CallControl):
@@ -33,7 +33,7 @@ class ResponsesRequest(CallControl):
     operation: str = Field(default="", description="Caller-supplied usage tag echoed onto the usage log.")
 
 
-class ResponsesResponse(GateCallRecord):
+class ResponsesResponse(LLMCallRecord):
     """Response from ``/v1/responses`` — Gate call metadata + the raw Responses object."""
 
     output: JsonValue | None = Field(default=None, description="The upstream Responses object, serialized as JSON.")

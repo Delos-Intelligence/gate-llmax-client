@@ -66,11 +66,11 @@ class RequestSpecifics(BaseModel):
     stop: list[str] | None = None
     seed_sampling: int | None = Field(
         default=None,
-        description="Provider sampling seed for deterministic sampling (OpenAI/Azure); distinct from GateRequest.seed_routing.",
+        description="Provider sampling seed for deterministic sampling (OpenAI/Azure); distinct from LLMRequest.seed_routing.",
     )
     n: int | None = Field(
         default=None,
-        description="Number of completions to generate (OpenAI/Azure `n`). When >1, the extra texts land in GateResponse.choices.",
+        description="Number of completions to generate (OpenAI/Azure `n`). When >1, the extra texts land in LLMResponse.choices.",
     )
     reasoning: bool | None = None
     reasoning_effort: ReasoningEffort | None = None
@@ -145,7 +145,7 @@ class BestTarget(BaseModel):
 ModelTarget = Annotated[SingleTarget | ParallelTarget | FallbackTarget | BestTarget, Field(discriminator="kind")]
 
 
-class GateRequest(CallControl):
+class LLMRequest(CallControl):
     """Canonical request payload sent from client to backend gateway.
 
     The ``target`` field selects the dispatch strategy:

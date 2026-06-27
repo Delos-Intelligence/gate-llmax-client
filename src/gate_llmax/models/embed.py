@@ -2,7 +2,7 @@
 
 ``EmbedResponse`` keeps OpenAI's ``object: "list"`` / ``data`` / ``model`` shape
 for wire compat but also carries Gate call metadata (``deployment_id``,
-``status``, ``latency_ms``) via ``GateCallRecord``. OpenAI clients ignore the
+``status``, ``latency_ms``) via ``LLMCallRecord``. OpenAI clients ignore the
 extra fields, so this remains drop-in compatible.
 """
 
@@ -13,7 +13,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 from .request import CallControl
-from .response import GateCallRecord
+from .response import LLMCallRecord
 
 
 class EmbedRequest(CallControl):
@@ -39,7 +39,7 @@ class EmbedObject(BaseModel):
     embedding: list[float] = Field(default_factory=list)
 
 
-class EmbedResponse(GateCallRecord):
+class EmbedResponse(LLMCallRecord):
     """Response from ``/v1/embeddings`` — Gate call metadata + OpenAI-style ``data``."""
 
     object: Literal["list"] = "list"

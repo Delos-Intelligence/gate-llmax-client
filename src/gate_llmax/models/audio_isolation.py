@@ -5,7 +5,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .request import CallControl
-from .response import GateCallRecord
+from .response import LLMCallRecord
 
 
 class AudioIsolationRequest(CallControl):
@@ -19,7 +19,7 @@ class AudioIsolationRequest(CallControl):
     )
 
 
-class AudioIsolationResponse(GateCallRecord):
+class AudioIsolationResponse(LLMCallRecord):
     """Response from ``/v1/audio/isolation`` — Gate call metadata + base64 isolated audio."""
 
     audio: str = Field(default="", description="Base64-encoded isolated audio (mp3).")

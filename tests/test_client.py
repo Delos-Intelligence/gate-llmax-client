@@ -1,4 +1,4 @@
-"""Integration tests for GateClient against a running Gate server.
+"""Integration tests for LLMClient against a running Gate server.
 
 Self-contained — no dependency on the backend source tree. Config comes from environment
 variables, optionally loaded from a ``.env`` placed beside this file (see ``.env.example``);
@@ -27,15 +27,15 @@ from pydantic import BaseModel
 
 from gate_llmax import (
     BaseAudioResponse,
-    GateAuthError,
-    GateBudgetError,
-    GateClient,
-    GateResponse,
     ImageResponse,
+    LLMAuthError,
+    LLMBudgetError,
+    LLMClient,
+    LLMResponse,
     ModelInfo,
     ModelPurpose,
     RawUsage,
-    VisionGateResponse,
+    VisionLLMResponse,
     VisionOCR,
 )
 from gate_llmax.types import OutputStatus
@@ -56,8 +56,8 @@ POEM_PNG = TESTS_DIR / "poem.png"
 
 
 @pytest.fixture
-async def client() -> AsyncGenerator[GateClient, None]:
-    async with GateClient(api_key=API_KEY, base_url=BASE_URL) as c:
+async def client() -> AsyncGenerator[LLMClient, None]:
+    async with LLMClient(api_key=API_KEY, base_url=BASE_URL) as c:
         yield c
 
 
@@ -66,7 +66,7 @@ async def client() -> AsyncGenerator[GateClient, None]:
 # ---------------------------------------------------------------------------
 
 
-async def test_list_models(client: GateClient) -> None:
+async def test_list_models(client: LLMClient) -> None:
     models = await client.list_models()
     assert isinstance(models, list)
     assert all(isinstance(m, ModelInfo) for m in models)
@@ -78,16 +78,16 @@ async def test_list_models(client: GateClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_call(client: GateClient) -> None:
+async def test_call(client: LLMClient) -> None:
     resp = await client.request(prompt="Reply with just the word OK.").call(CHAT_MODEL)
-    assert isinstance(resp, GateResponse)
+    assert isinstance(resp, LLMResponse)
     assert resp.status == OutputStatus.SUCCESS
     assert isinstance(resp.raw_text, str)
     assert resp.raw_text
     assert resp.usage.output_tokens > 0
 
 
-async def test_call_stream(client: GateClient) -> None:
+async def test_call_stream(client: LLMClient) -> None:
     parts: list[str] = []
     async for chunk in client.request(prompt="Count 1 to 3 separated by commas, no other text.").call_stream(CHAT_MODEL):
         if chunk.text:
@@ -98,10 +98,10 @@ async def test_call_stream(client: GateClient) -> None:
     assert "1" in "".join(parts)
 
 
-async def test_multicall(client: GateClient) -> None:
+async def test_multicall(client: LLMClient) -> None:
     responses = await client.request(prompt="Reply with just the word OK.").multicall([CHAT_MODEL, CHAT_MODEL])
     assert len(responses) == 2
-    assert all(isinstance(r, GateResponse) for r in responses)
+    assert all(isinstance(r, LLMResponse) for r in responses)
     assert all(r.status == OutputStatus.SUCCESS for r in responses)
 
 
@@ -115,7 +115,7 @@ class CityFact(BaseModel):
     one_fact: str
 
 
-async def test_cast(client: GateClient) -> None:
+async def test_cast(client: LLMClient) -> None:
     typed = await (
         client.request(
             system_prompt='Reply with a single JSON object only, no markdown: {"city": string, "one_fact": string}.',
@@ -135,7 +135,7 @@ async def test_cast(client: GateClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_embed(client: GateClient) -> None:
+async def test_embed(client: LLMClient) -> None:
     if not EMBED_MODEL:
         pytest.skip("GATE_EMBED_MODEL not set")
     resp = await client.embed_request("Hello world").call(EMBED_MODEL)
@@ -148,7 +148,7 @@ async def test_embed(client: GateClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_images_generate(client: GateClient) -> None:
+async def test_images_generate(client: LLMClient) -> None:
     if not IMAGES_MODEL:
         pytest.skip("GATE_IMAGES_MODEL not set")
     seen_usages: list[RawUsage] = []
@@ -174,7 +174,7 @@ async def test_images_generate(client: GateClient) -> None:
     assert len(seen_responses) == 1
 
 
-async def test_images_stream(client: GateClient) -> None:
+async def test_images_stream(client: LLMClient) -> None:
     if not IMAGES_MODEL:
         pytest.skip("GATE_IMAGES_MODEL not set")
     seen_usages: list[RawUsage] = []
@@ -198,7 +198,7 @@ async def test_images_stream(client: GateClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_tts_call(client: GateClient) -> None:
+async def test_tts_call(client: LLMClient) -> None:
     if not TTS_MODEL:
         pytest.skip("GATE_TTS_MODEL not set")
     text = "Hello world from Gate."
@@ -218,7 +218,7 @@ async def test_tts_call(client: GateClient) -> None:
     assert len(seen_responses) == 1
 
 
-async def test_tts_stream(client: GateClient) -> None:
+async def test_tts_stream(client: LLMClient) -> None:
     if not TTS_MODEL:
         pytest.skip("GATE_TTS_MODEL not set")
     text = "Streaming hello from Gate."
@@ -231,7 +231,7 @@ async def test_tts_stream(client: GateClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_cache_roundtrip(client: GateClient) -> None:
+async def test_cache_roundtrip(client: LLMClient) -> None:
     """A second identical call with cache_ttl replays the first; without it, nothing is cached.
 
     Skips when the gateway has no cache configured (no REDIS_URL).
@@ -253,7 +253,7 @@ async def test_cache_roundtrip(client: GateClient) -> None:
 
 async def test_cache_client_default() -> None:
     """A client-level default cache_ttl caches by default; a per-call 0 forces it off."""
-    cached_client = GateClient(api_key=API_KEY, base_url=BASE_URL, cache_ttl=120)
+    cached_client = LLMClient(api_key=API_KEY, base_url=BASE_URL, cache_ttl=120)
     try:
         prompt = f"Reply with the single word PEAR. token={uuid.uuid4()}"
         await cached_client.request(prompt=prompt).call(CHAT_MODEL)
@@ -274,7 +274,7 @@ async def test_cache_client_default() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_generate_audio_sound_effects(client: GateClient) -> None:
+async def test_generate_audio_sound_effects(client: LLMClient) -> None:
     if not AUDIO_GEN_MODEL:
         pytest.skip("GATE_AUDIO_GEN_MODEL not set")
     prompt = "a short metallic click"
@@ -289,7 +289,7 @@ async def test_generate_audio_sound_effects(client: GateClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_usage_callback_uniform(client: GateClient) -> None:
+async def test_usage_callback_uniform(client: LLMClient) -> None:
     """A single `UsageCallback` registered via `.usage_callback(...)` must fire from chat, images, and tts."""
     seen: list[RawUsage] = []
 
@@ -317,7 +317,7 @@ async def test_usage_callback_uniform(client: GateClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_call_prefer_falls_back(client: GateClient) -> None:
+async def test_call_prefer_falls_back(client: LLMClient) -> None:
     """call_prefer skips an unknown model and returns the next working one (by its Gate name)."""
     resp = await client.request(prompt="Reply with just OK.").call_prefer(["definitely-not-a-real-model-xyz", CHAT_MODEL])
     assert resp.status == OutputStatus.SUCCESS
@@ -325,22 +325,22 @@ async def test_call_prefer_falls_back(client: GateClient) -> None:
     assert resp.raw_text
 
 
-async def test_batch_multicall(client: GateClient) -> None:
+async def test_batch_multicall(client: LLMClient) -> None:
     """batch_multicall returns one SUCCESS response per model, in order."""
     responses = await client.request(prompt="Reply with just OK.").batch_multicall([CHAT_MODEL, CHAT_MODEL])
     assert len(responses) == 2
-    assert all(isinstance(r, GateResponse) for r in responses)
+    assert all(isinstance(r, LLMResponse) for r in responses)
     assert all(r.status == OutputStatus.SUCCESS for r in responses)
 
 
-async def test_call_best_priority_skips_failed(client: GateClient) -> None:
+async def test_call_best_priority_skips_failed(client: LLMClient) -> None:
     """call_best (priority mode) excludes a failing model and returns the next working one."""
     resp = await client.request(prompt="Reply with just OK.").call_best(["definitely-not-a-real-model-xyz", CHAT_MODEL])
     assert resp.status == OutputStatus.SUCCESS
     assert resp.model == CHAT_MODEL
 
 
-async def test_call_best_key(client: GateClient) -> None:
+async def test_call_best_key(client: LLMClient) -> None:
     """call_best with a score function returns the highest-scoring SUCCESS."""
     resp = await client.request(prompt="Reply with just OK.").call_best([CHAT_MODEL, CHAT_MODEL], key=lambda r: len(r.raw_text))
     assert resp.status == OutputStatus.SUCCESS
@@ -359,7 +359,7 @@ SECRET_COLOR_TOOLS: list[dict[str, Any]] = [
 ]
 
 
-async def test_with_tools_executor(client: GateClient) -> None:
+async def test_with_tools_executor(client: LLMClient) -> None:
     """`.with_tools(tools, executor).call()` runs the loop and feeds the result back."""
     calls: list[str] = []
 
@@ -380,7 +380,7 @@ async def test_with_tools_executor(client: GateClient) -> None:
     assert "purple" in resp.raw_text.lower()
 
 
-async def test_with_tools_no_executor(client: GateClient) -> None:
+async def test_with_tools_no_executor(client: LLMClient) -> None:
     """`.with_tools(tools)` with no executor records the model's requested calls in tool_calls."""
     resp = (
         await client.request(
@@ -395,13 +395,13 @@ async def test_with_tools_no_executor(client: GateClient) -> None:
     assert resp.tool_calls[0].function.name == "get_secret_color"
 
 
-async def test_vision_ocr(client: GateClient) -> None:
-    """vision_request(...).call() returns a typed VisionGateResponse with recognised text lines."""
+async def test_vision_ocr(client: LLMClient) -> None:
+    """vision_request(...).call() returns a typed VisionLLMResponse with recognised text lines."""
     if not VISION_MODEL:
         pytest.skip("GATE_VISION_MODEL not set")
     image_b64 = base64.standard_b64encode(POEM_PNG.read_bytes()).decode()
     resp = await client.vision_request([image_b64]).call(VISION_MODEL)
-    assert isinstance(resp, VisionGateResponse)
+    assert isinstance(resp, VisionLLMResponse)
     if resp.status == OutputStatus.NO_DEPLOYMENT:
         pytest.skip("vision deployment unavailable")
     assert resp.status == OutputStatus.SUCCESS
@@ -415,16 +415,16 @@ async def test_vision_ocr(client: GateClient) -> None:
 
 
 async def test_auth_error() -> None:
-    async with GateClient(api_key="invalid-key", base_url=BASE_URL) as bad_client:
-        with pytest.raises(GateAuthError):
+    async with LLMClient(api_key="invalid-key", base_url=BASE_URL) as bad_client:
+        with pytest.raises(LLMAuthError):
             await bad_client.list_models()
 
 
-async def test_budget_denied(client: GateClient) -> None:
+async def test_budget_denied(client: LLMClient) -> None:
     """A .budget() check returning False denies the call before any dispatch."""
 
     async def deny() -> bool:
         return False
 
-    with pytest.raises(GateBudgetError):
+    with pytest.raises(LLMBudgetError):
         await client.request(prompt="hi").budget(deny).call(CHAT_MODEL)
