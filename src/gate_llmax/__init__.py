@@ -49,6 +49,7 @@ from .exceptions import (
     LLMServerError,
     LLMTimeoutError,
 )
+from .fake import FakeClient
 from .ratelimit import RateLimit
 from .request import (
     AudioCallback,
@@ -106,6 +107,7 @@ __all__ = [
     "EmbedRequest",
     "EmbedResponse",
     "ExtraAttributeName",
+    "FakeClient",
     "ImageCallback",
     "ImageData",
     "ImageMessage",
