@@ -49,6 +49,7 @@ from .exceptions import (
     LLMServerError,
     LLMTimeoutError,
 )
+from .ratelimit import RateLimit
 from .request import (
     AudioCallback,
     AudioGenRequestBuilder,
@@ -137,6 +138,7 @@ __all__ = [
     "MulticallStreamFrame",
     "OnUsage",
     "OutputStatus",
+    "RateLimit",
     "RawUsage",
     "ReasoningEffort",
     "RequestSpecifics",

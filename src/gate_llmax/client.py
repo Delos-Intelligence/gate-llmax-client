@@ -33,6 +33,7 @@ from gate_llmax.models.responses import ResponsesRequest, ResponsesResponse
 from gate_llmax.models.tts import TTSFormat, TTSRequest, TTSResponse
 from gate_llmax.models.video import VideoAspectRatio, VideoDuration, VideoRequest, VideoResolution, VideoResponse
 from gate_llmax.models.vision import VisionOCRRequest
+from gate_llmax.ratelimit import RateLimit, RateLimiter
 from gate_llmax.types import JsonDict, JsonValue, ReasoningEffort
 
 from .exceptions import (
@@ -87,6 +88,7 @@ class LLMClient:
         budget: BudgetCheck | None = None,
         default_zone_selection: ZoneSelection | None = None,
         seed_routing: object | None = None,
+        rate_limit: RateLimit | None = None,
         httpx_aclient: httpx.AsyncClient | None = None,
     ) -> None:
         """Initialize the client with API key and base URL.
@@ -114,6 +116,8 @@ class LLMClient:
                 (chat routing only); per-call ``.zone(...)`` overrides it.
             seed_routing: Default deterministic-routing seed (e.g. ``(org_id, user_id)``) pinning a
                 principal's calls to one deployment; per-call ``seed_routing=`` overrides it.
+            rate_limit: Optional client-side throttle (concurrency / requests-per-min / tokens-per-min)
+                applied to every chat call — replaces wrapping the client in a rate-limited subclass.
             httpx_aclient: Optional shared async HTTP client.  When provided the
                 caller owns its lifecycle and ``close()`` will not close it.
                 Useful to share a single connection pool across many ``LLMClient``
@@ -126,6 +130,7 @@ class LLMClient:
         self._cache_ttl = cache_ttl
         self._default_temperature = temperature
         self._usage_callbacks = [usage_callback] if usage_callback is not None else []
+        self._limiter = RateLimiter(rate_limit) if rate_limit is not None else None
         self._budget = budget
         self._default_zone_selection = default_zone_selection
         self._seed_routing_token = seed_to_token(seed_routing)
@@ -651,7 +656,15 @@ class LLMClient:
         return AudioGenResponse.model_validate(response.json())
 
     async def _send(self, request: LLMRequest) -> LLMResponse:
-        """POST to /v1/chat/completions and return a ``LLMResponse``."""
+        """POST to /v1/chat/completions (rate-limited when ``rate_limit`` is configured)."""
+        if self._limiter is None:
+            return await self._do_send(request)
+        async with self._limiter.guard():
+            result = await self._do_send(request)
+        self._limiter.record_tokens(result.usage.input_tokens + result.usage.output_tokens)
+        return result
+
+    async def _do_send(self, request: LLMRequest) -> LLMResponse:
         try:
             response = await self._http.post(
                 "/v1/chat/completions",
@@ -720,7 +733,20 @@ class LLMClient:
             raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
 
     async def _stream(self, request: LLMRequest) -> AsyncIterator[StreamChunk]:
-        """POST with stream=True and yield StreamChunks via SSE."""
+        """POST with stream=True and yield StreamChunks via SSE (rate-limited when configured)."""
+        if self._limiter is None:
+            async for chunk in self._do_stream(request):
+                yield chunk
+            return
+        async with self._limiter.guard():
+            total = 0
+            async for chunk in self._do_stream(request):
+                if chunk.output_tokens is not None:
+                    total = (chunk.input_tokens or 0) + (chunk.output_tokens or 0)
+                yield chunk
+        self._limiter.record_tokens(total)
+
+    async def _do_stream(self, request: LLMRequest) -> AsyncIterator[StreamChunk]:
         try:
             async with self._http.stream(
                 "POST",
