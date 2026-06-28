@@ -278,8 +278,9 @@ class MediaBuilder[ResponseT: LLMCallRecord](BaseModel):
         for cb in self.usage_callbacks:
             await cb(usage)
 
-    async def _fire(self, response: ResponseT) -> None:
-        await self._fire_usage(response.usage)
+    async def _fire(self, response: ResponseT, *, disable_usage: bool = False) -> None:
+        if not disable_usage:
+            await self._fire_usage(response.usage)
         for cb in self.callbacks:
             await cb(response)
 
@@ -410,23 +411,33 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         if self.cast_json_enabled and response.json_object is None and response.raw_text:
             response.json_object = _parse_json(response.raw_text, loose=self.loose_edges)
 
-    async def _call_raw(self, model: str, *, priority: int = 0) -> LLMResponse:
-        """One non-streaming turn: budget gate → send → cast_json → usage → callbacks. No finalize."""
+    async def _call_raw(self, model: str, *, priority: int = 0, disable_usage: bool = False) -> LLMResponse:
+        """One non-streaming turn: budget gate → send → cast_json → usage → callbacks. No finalize.
+
+        ``disable_usage`` skips the usage callbacks (``on_usage`` + billing) for this turn;
+        response callbacks still fire.
+        """
         await self._gate_budget()
         request = self._build_request(model, stream=False)
         response = await self.client._send(request, priority=priority)  # noqa: SLF001
         self._apply_cast_json(response)
-        if self.on_usage is not None:
+        if not disable_usage and self.on_usage is not None:
             await self.on_usage(response.usage)
-        await self._fire(response)
+        await self._fire(response, disable_usage=disable_usage)
         return response
 
-    async def call(self, model: str, *, priority: int = 0) -> ResponseT:
+    async def call(self, model: str, *, priority: int = 0, disable_usage: bool = False) -> ResponseT:
         """Non-streaming completion for `model` (runs the tool loop when ``with_tools`` is set).
 
         ``priority`` orders calls that queue for a rate-limit concurrency slot (higher first).
+        ``disable_usage`` skips the usage callbacks for this call only, so a billing-enabled
+        client can make an unbilled call without ``clear_usage_callbacks()``.
         """
-        raw = await self._call_tool_loop(model) if self.tool_executor is not None else await self._call_raw(model, priority=priority)
+        raw = (
+            await self._call_tool_loop(model, disable_usage=disable_usage)
+            if self.tool_executor is not None
+            else await self._call_raw(model, priority=priority, disable_usage=disable_usage)
+        )
         return self._finalize(raw)
 
     async def call_stream(
@@ -437,12 +448,15 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         server_side: bool = False,
         smooth_duration_ms: int = 10,
         priority: int = 0,
+        disable_usage: bool = False,
     ) -> AsyncIterator[StreamChunk]:
         """Stream chunks for `model` (runs the tool loop when ``with_tools`` is set).
 
         ``smooth`` waits ``smooth_duration_ms`` after each text chunk — client-side, or
         ``server_side=True`` to pace on the gateway. ``on_usage`` fires after the final
         chunk (estimated input tokens on timeout/connection error, then re-raised).
+        ``disable_usage`` skips the usage callbacks for this stream only, so a billing-enabled
+        client can make an unbilled call without ``clear_usage_callbacks()``.
         """
         if self.tool_stream_executor is not None:
             async for chunk in self._stream_tool_loop_streaming(
@@ -450,11 +464,14 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
                 smooth=smooth,
                 server_side=server_side,
                 smooth_duration_ms=smooth_duration_ms,
+                disable_usage=disable_usage,
             ):
                 yield chunk
             return
         if self.tool_executor is not None:
-            async for chunk in self._stream_tool_loop(model, smooth=smooth, server_side=server_side, smooth_duration_ms=smooth_duration_ms):
+            async for chunk in self._stream_tool_loop(
+                model, smooth=smooth, server_side=server_side, smooth_duration_ms=smooth_duration_ms, disable_usage=disable_usage
+            ):
                 yield chunk
             return
         await self._gate_budget()
@@ -487,14 +504,16 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         except (LLMTimeoutError, LLMConnectionError):
             estimated = estimate_input_tokens(self.system_prompt, self.messages, self.images)
             usage = RawUsage(model=model, input_tokens=estimated, estimated=True, operation=self.operation)
+            if not disable_usage:
+                if self.on_usage is not None:
+                    await self.on_usage(usage)
+                await self._fire_usage(usage)
+            raise
+        usage = final_usage if final_usage is not None else RawUsage(model=model, estimated=True, operation=self.operation)
+        if not disable_usage:
             if self.on_usage is not None:
                 await self.on_usage(usage)
             await self._fire_usage(usage)
-            raise
-        usage = final_usage if final_usage is not None else RawUsage(model=model, estimated=True, operation=self.operation)
-        if self.on_usage is not None:
-            await self.on_usage(usage)
-        await self._fire_usage(usage)
 
     def call_sync(self, model: str) -> ResponseT:
         """Blocking wrapper for `call`."""
@@ -773,11 +792,11 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         """Blocking wrapper for `call_best`."""
         return asyncio.run(self.call_best(models, key=key, accept=accept, greatest=greatest, lowest=lowest, timeout=timeout))
 
-    async def _call_tool_loop(self, model: str) -> LLMResponse:
+    async def _call_tool_loop(self, model: str, *, disable_usage: bool = False) -> LLMResponse:
         """Non-streaming tool loop; returns the raw final turn with usage aggregated across turns."""
         executor = self.tool_executor
         if executor is None:
-            return await self._call_raw(model)
+            return await self._call_raw(model, disable_usage=disable_usage)
         messages = list(self.messages)
         total = RawUsage(model=model, operation=self.operation)
         last: LLMResponse | None = None
@@ -785,7 +804,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             allow_tools = self.tool_max_tokens_before_use is None or _conversation_token_count(messages) <= self.tool_max_tokens_before_use
             turn_messages = messages if allow_tools else [*messages, Message.user(_TOOL_BUDGET_EXCEEDED_NOTE)]
             turn = self.model_copy(update={"messages": turn_messages, "tool_executor": None, "tools": self.tools if allow_tools else None})
-            response = await turn._call_raw(model)  # noqa: SLF001
+            response = await turn._call_raw(model, disable_usage=disable_usage)  # noqa: SLF001
             last = response
             total = total + response.usage
             text, tool_calls = _extract_tool_calls(response)
@@ -811,11 +830,14 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         smooth: bool,
         server_side: bool,
         smooth_duration_ms: int,
+        disable_usage: bool = False,
     ) -> AsyncIterator[StreamChunk]:
         """Streaming tool loop; yields each turn's chunks, runs tool calls between turns."""
         executor = self.tool_executor
         if executor is None:
-            async for chunk in self.call_stream(model, smooth=smooth, server_side=server_side, smooth_duration_ms=smooth_duration_ms):
+            async for chunk in self.call_stream(
+                model, smooth=smooth, server_side=server_side, smooth_duration_ms=smooth_duration_ms, disable_usage=disable_usage
+            ):
                 yield chunk
             return
         messages = list(self.messages)
@@ -825,7 +847,9 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             turn = self.model_copy(update={"messages": turn_messages, "tool_executor": None, "tools": self.tools if allow_tools else None})
             text_parts: list[str] = []
             acc: dict[int, ToolCall] = {}
-            async for chunk in turn.call_stream(model, smooth=smooth, server_side=server_side, smooth_duration_ms=smooth_duration_ms):
+            async for chunk in turn.call_stream(
+                model, smooth=smooth, server_side=server_side, smooth_duration_ms=smooth_duration_ms, disable_usage=disable_usage
+            ):
                 if chunk.text:
                     text_parts.append(chunk.text)
                 if chunk.tool_calls_delta:
@@ -846,6 +870,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         smooth: bool,
         server_side: bool,
         smooth_duration_ms: int,
+        disable_usage: bool = False,
     ) -> AsyncIterator[StreamChunk]:
         """Streaming tool loop whose executor yields live progress.
 
@@ -856,7 +881,9 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         """
         executor = self.tool_stream_executor
         if executor is None:
-            async for chunk in self.call_stream(model, smooth=smooth, server_side=server_side, smooth_duration_ms=smooth_duration_ms):
+            async for chunk in self.call_stream(
+                model, smooth=smooth, server_side=server_side, smooth_duration_ms=smooth_duration_ms, disable_usage=disable_usage
+            ):
                 yield chunk
             return
         messages = list(self.messages)
@@ -873,7 +900,9 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             )
             text_parts: list[str] = []
             acc: dict[int, ToolCall] = {}
-            async for chunk in turn.call_stream(model, smooth=smooth, server_side=server_side, smooth_duration_ms=smooth_duration_ms):
+            async for chunk in turn.call_stream(
+                model, smooth=smooth, server_side=server_side, smooth_duration_ms=smooth_duration_ms, disable_usage=disable_usage
+            ):
                 if chunk.text:
                     text_parts.append(chunk.text)
                 if chunk.tool_calls_delta:
