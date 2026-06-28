@@ -130,7 +130,8 @@ class LLMClient:
         self._cache_ttl = cache_ttl
         self._default_temperature = temperature
         self._usage_callbacks = [usage_callback] if usage_callback is not None else []
-        self._limiter = RateLimiter(rate_limit) if rate_limit is not None else None
+        # Always present — an unset RateLimit is a no-op, so call paths need no None-check.
+        self._limiter = RateLimiter(rate_limit or RateLimit())
         self._budget = budget
         self._default_zone_selection = default_zone_selection
         self._seed_routing_token = seed_to_token(seed_routing)
@@ -655,29 +656,24 @@ class LLMClient:
         response = await self._post_json("/v1/audio/generations", request, "Audio generation", client_timeout=MEDIA_CLIENT_TIMEOUT)
         return AudioGenResponse.model_validate(response.json())
 
-    async def _send(self, request: LLMRequest) -> LLMResponse:
-        """POST to /v1/chat/completions (rate-limited when ``rate_limit`` is configured)."""
-        if self._limiter is None:
-            return await self._do_send(request)
-        async with self._limiter.guard():
-            result = await self._do_send(request)
+    async def _send(self, request: LLMRequest, *, priority: int = 0) -> LLMResponse:
+        """POST to /v1/chat/completions, throttled by the client's rate limiter (no-op when unset)."""
+        async with self._limiter.guard(priority):
+            try:
+                response = await self._http.post(
+                    "/v1/chat/completions",
+                    content=request.model_dump_json(),
+                    headers={"Content-Type": "application/json"},
+                )
+            except httpx.TimeoutException as exc:
+                raise LLMTimeoutError(f"Request timed out: {exc}") from exc
+            except httpx.ConnectError as exc:
+                raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
+
+            _raise_for_status(response)
+            result = LLMResponse.model_validate(response.json())
         self._limiter.record_tokens(result.usage.input_tokens + result.usage.output_tokens)
         return result
-
-    async def _do_send(self, request: LLMRequest) -> LLMResponse:
-        try:
-            response = await self._http.post(
-                "/v1/chat/completions",
-                content=request.model_dump_json(),
-                headers={"Content-Type": "application/json"},
-            )
-        except httpx.TimeoutException as exc:
-            raise LLMTimeoutError(f"Request timed out: {exc}") from exc
-        except httpx.ConnectError as exc:
-            raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
-
-        _raise_for_status(response)
-        return LLMResponse.model_validate(response.json())
 
     async def _send_batch(self, request: LLMRequest) -> list[LLMResponse]:
         """POST to /v1/chat/completions with a parallel target — single wire payload, N responses."""
@@ -732,38 +728,30 @@ class LLMClient:
         except httpx.ConnectError as exc:
             raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
 
-    async def _stream(self, request: LLMRequest) -> AsyncIterator[StreamChunk]:
-        """POST with stream=True and yield StreamChunks via SSE (rate-limited when configured)."""
-        if self._limiter is None:
-            async for chunk in self._do_stream(request):
-                yield chunk
-            return
-        async with self._limiter.guard():
+    async def _stream(self, request: LLMRequest, *, priority: int = 0) -> AsyncIterator[StreamChunk]:
+        """POST with stream=True, throttled by the client's rate limiter (no-op when unset)."""
+        async with self._limiter.guard(priority):
             total = 0
-            async for chunk in self._do_stream(request):
-                if chunk.output_tokens is not None:
-                    total = (chunk.input_tokens or 0) + (chunk.output_tokens or 0)
-                yield chunk
+            try:
+                async with self._http.stream(
+                    "POST",
+                    "/v1/chat/completions",
+                    content=request.model_dump_json(),
+                    headers={"Content-Type": "application/json"},
+                ) as response:
+                    if response.status_code >= 400:
+                        await response.aread()
+                    _raise_for_status(response)
+                    stream = StreamResponse(response)
+                    async for chunk in stream:
+                        if chunk.output_tokens is not None:
+                            total = (chunk.input_tokens or 0) + (chunk.output_tokens or 0)
+                        yield chunk
+            except httpx.TimeoutException as exc:
+                raise LLMTimeoutError(f"Stream timed out: {exc}") from exc
+            except httpx.ConnectError as exc:
+                raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
         self._limiter.record_tokens(total)
-
-    async def _do_stream(self, request: LLMRequest) -> AsyncIterator[StreamChunk]:
-        try:
-            async with self._http.stream(
-                "POST",
-                "/v1/chat/completions",
-                content=request.model_dump_json(),
-                headers={"Content-Type": "application/json"},
-            ) as response:
-                if response.status_code >= 400:
-                    await response.aread()
-                _raise_for_status(response)
-                stream = StreamResponse(response)
-                async for chunk in stream:
-                    yield chunk
-        except httpx.TimeoutException as exc:
-            raise LLMTimeoutError(f"Stream timed out: {exc}") from exc
-        except httpx.ConnectError as exc:
-            raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
 
     async def _send_video(self, request: VideoRequest) -> VideoResponse:
         """POST to /v1/videos and return a ``VideoResponse`` (long-running)."""

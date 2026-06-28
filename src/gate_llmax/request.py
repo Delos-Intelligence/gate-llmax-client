@@ -394,20 +394,23 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         if self.cast_json_enabled and response.json_object is None and response.raw_text:
             response.json_object = extract_json_from_text(response.raw_text)
 
-    async def _call_raw(self, model: str) -> LLMResponse:
+    async def _call_raw(self, model: str, *, priority: int = 0) -> LLMResponse:
         """One non-streaming turn: budget gate → send → cast_json → usage → callbacks. No finalize."""
         await self._gate_budget()
         request = self._build_request(model, stream=False)
-        response = await self.client._send(request)  # noqa: SLF001
+        response = await self.client._send(request, priority=priority)  # noqa: SLF001
         self._apply_cast_json(response)
         if self.on_usage is not None:
             await self.on_usage(response.usage)
         await self._fire(response)
         return response
 
-    async def call(self, model: str) -> ResponseT:
-        """Non-streaming completion for `model` (runs the tool loop when ``with_tools`` is set)."""
-        raw = await self._call_tool_loop(model) if self.tool_executor is not None else await self._call_raw(model)
+    async def call(self, model: str, *, priority: int = 0) -> ResponseT:
+        """Non-streaming completion for `model` (runs the tool loop when ``with_tools`` is set).
+
+        ``priority`` orders calls that queue for a rate-limit concurrency slot (higher first).
+        """
+        raw = await self._call_tool_loop(model) if self.tool_executor is not None else await self._call_raw(model, priority=priority)
         return self._finalize(raw)
 
     async def call_stream(
@@ -417,6 +420,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         smooth: bool = False,
         server_side: bool = False,
         smooth_duration_ms: int = 10,
+        priority: int = 0,
     ) -> AsyncIterator[StreamChunk]:
         """Stream chunks for `model` (runs the tool loop when ``with_tools`` is set).
 
@@ -448,7 +452,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         client_paces = smooth and not server_side
         final_usage: RawUsage | None = None
         try:
-            async for chunk in self.client._stream(request):  # noqa: SLF001
+            async for chunk in self.client._stream(request, priority=priority):  # noqa: SLF001
                 if chunk.input_tokens is not None or chunk.output_tokens is not None or chunk.provider is not None:
                     final_usage = RawUsage(
                         input_tokens=chunk.input_tokens or 0,

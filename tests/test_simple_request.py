@@ -20,7 +20,7 @@ def _send_returning(text: str) -> tuple[Any, dict[str, LLMRequest]]:
     """Stub for ``LLMClient._send`` plus the dict it records the sent request into."""
     captured: dict[str, LLMRequest] = {}
 
-    async def _send(self: LLMClient, request: LLMRequest) -> LLMResponse:  # noqa: ARG001
+    async def _send(self: LLMClient, request: LLMRequest, *, priority: int = 0) -> LLMResponse:  # noqa: ARG001
         captured["req"] = request
         return LLMResponse(raw_text=text, model="m", status=OutputStatus.SUCCESS, usage=RawUsage(model="m"))
 

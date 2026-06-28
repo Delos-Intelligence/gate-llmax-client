@@ -20,7 +20,7 @@ from gate_llmax.types import OutputStatus
 def _send_capturing() -> tuple[Any, dict[str, LLMRequest]]:
     captured: dict[str, LLMRequest] = {}
 
-    async def _send(self: LLMClient, request: LLMRequest) -> LLMResponse:  # noqa: ARG001
+    async def _send(self: LLMClient, request: LLMRequest, *, priority: int = 0) -> LLMResponse:  # noqa: ARG001
         captured["req"] = request
         return LLMResponse(raw_text="best", model="winner", status=OutputStatus.SUCCESS, usage=RawUsage(model="winner"))
 

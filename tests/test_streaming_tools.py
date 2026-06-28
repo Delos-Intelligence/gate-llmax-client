@@ -21,7 +21,7 @@ def _scripted_stream() -> Any:
     """Stub for ``LLMClient._stream``: the first turn calls a tool, later turns answer."""
     state = {"i": 0}
 
-    async def _stream(self: LLMClient, request: Any) -> AsyncIterator[StreamChunk]:  # noqa: ARG001
+    async def _stream(self: LLMClient, request: Any, *, priority: int = 0) -> AsyncIterator[StreamChunk]:  # noqa: ARG001
         turn = state["i"]
         state["i"] += 1
         if turn == 0:
