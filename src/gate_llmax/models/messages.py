@@ -89,6 +89,35 @@ class Message(BaseModel):
         """Create a tool-result message answering a prior tool call."""
         return cls(role=MessageRole.TOOL, content=[TextMessage(text=content)], tool_call_id=tool_call_id, name=name)
 
+    @classmethod
+    def from_openai(cls, message: Any) -> Message:
+        """Build a Message from an OpenAI-shaped chat message — a dict or any object with the same fields.
+
+        Handles system / user / assistant (incl. ``tool_calls``) / tool turns. Text content only
+        (multimodal ``content`` lists are flattened to their text).
+        """
+        if isinstance(message, dict):
+            role, content = message.get("role"), message.get("content")
+            tool_calls, tool_call_id, name = message.get("tool_calls"), message.get("tool_call_id"), message.get("name")
+        else:
+            role, content = getattr(message, "role", None), getattr(message, "content", None)
+            tool_calls = getattr(message, "tool_calls", None)
+            tool_call_id, name = getattr(message, "tool_call_id", None), getattr(message, "name", None)
+
+        if isinstance(content, list):  # multimodal parts → keep the text
+            content = "\n".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text")
+        text = content or ""
+
+        if role == "system":
+            return cls.system(text)
+        if role == "assistant":
+            if tool_calls:
+                return cls.assistant_tool_calls([ToolCall.from_openai(tc) for tc in tool_calls], text)
+            return cls.assistant(text)
+        if role == "tool":
+            return cls.tool(tool_call_id or "", text, name=name)
+        return cls.user(text)
+
 
 def content_block_to_openai(block: TextMessage | ImageMessage) -> JsonDict:
     """Map a Gate content block to an OpenAI chat `content` element."""

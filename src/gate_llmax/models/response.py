@@ -27,6 +27,11 @@ class ToolCall(BaseModel):
     type: Literal["function"] = "function"
     function: ToolFunction = Field(default_factory=ToolFunction)
 
+    @classmethod
+    def from_openai(cls, tool_call: Any) -> ToolCall:
+        """Build from an OpenAI-shaped tool call (a dict or any object with the same fields)."""
+        return cls.model_validate(tool_call, from_attributes=True)
+
 
 ROUND = 5
 
@@ -129,6 +134,29 @@ class StreamChunk(BaseModel):
                 completion_tokens=self.output_tokens or 0,
             )
         return None
+
+    def to_openai_chunk(self, *, model: str, completion_id: str, created: int, with_usage: bool = False) -> JsonDict:
+        """Serialize as an OpenAI ChatCompletionChunk dict.
+
+        ``with_usage`` mirrors ``stream_options.include_usage`` — the final chunk (which
+        carries token counts) then includes an OpenAI-shaped ``usage`` block.
+        """
+        payload: dict[str, Any] = {
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [
+                {"index": 0, "delta": c.delta.model_dump(exclude_none=True), "finish_reason": c.finish_reason} for c in self.choices
+            ],
+        }
+        if with_usage and self.usage is not None:
+            payload["usage"] = {
+                "prompt_tokens": self.usage.prompt_tokens,
+                "completion_tokens": self.usage.completion_tokens,
+                "total_tokens": self.usage.prompt_tokens + self.usage.completion_tokens,
+            }
+        return payload
 
     @classmethod
     def from_openai(cls, chunk: Any) -> StreamChunk:
@@ -264,6 +292,31 @@ class LLMResponse(LLMCallRecord):
     def timeout(cls, model: str) -> LLMResponse:
         """Synthetic response for a per-model call that exceeded the batch deadline."""
         return cls(usage=RawUsage(model=model, estimated=True), model=model, status=OutputStatus.TIMEOUT)
+
+    def to_openai_completion(self, *, model: str, completion_id: str, created: int) -> JsonDict:
+        """Serialize as an OpenAI ChatCompletion dict (single choice; ``finish_reason`` from tool calls)."""
+        message: dict[str, Any] = {"role": "assistant", "content": self.raw_text or None}
+        if self.tool_calls:
+            message["tool_calls"] = [tc.model_dump() for tc in self.tool_calls]
+        return {
+            "id": completion_id,
+            "object": "chat.completion",
+            "created": created,
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "logprobs": None,
+                    "finish_reason": "tool_calls" if self.tool_calls else "stop",
+                    "message": message,
+                },
+            ],
+            "usage": {
+                "prompt_tokens": self.usage.input_tokens,
+                "completion_tokens": self.usage.output_tokens,
+                "total_tokens": self.usage.input_tokens + self.usage.output_tokens,
+            },
+        }
 
 
 class VisionLLMResponse(LLMCallRecord):
