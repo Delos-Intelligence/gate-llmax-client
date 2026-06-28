@@ -492,6 +492,8 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
                         input_tokens=chunk.input_tokens or 0,
                         output_tokens=chunk.output_tokens or 0,
                         cached_input_tokens=chunk.cached_input_tokens or 0,
+                        input_cost=chunk.input_cost or 0.0,
+                        output_cost=chunk.output_cost or 0.0,
                         model=model,
                         provider=chunk.provider or "",
                         region=chunk.region or "",

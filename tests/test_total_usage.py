@@ -13,8 +13,14 @@ import pytest
 import gate_llmax.client as client_mod
 from gate_llmax import LLMClient, RawUsage
 from gate_llmax.models.request import LLMRequest
-from gate_llmax.models.response import LLMResponse
+from gate_llmax.models.response import LLMResponse, StreamChunk
 from gate_llmax.types import OutputStatus
+
+
+async def _stream_costing(self: LLMClient, request: LLMRequest, *, priority: int = 0):  # noqa: ARG001
+    """Stub for ``LLMClient._stream`` whose terminal frame carries server-computed cost."""
+    yield StreamChunk(text="hi")
+    yield StreamChunk(is_done=True, input_tokens=10, output_tokens=20, input_cost=0.01, output_cost=0.02, provider="p")
 
 
 def _send_costing(input_cost: float, output_cost: float) -> Any:
@@ -53,3 +59,24 @@ def test_total_usage_excludes_disable_usage(monkeypatch: Any) -> None:
     asyncio.run(client.request(prompt="a").call("m"))
     asyncio.run(client.request(prompt="b").call("m", disable_usage=True))
     assert client.total_usage == pytest.approx(0.03)  # only the billed call counted
+
+
+def test_streaming_surfaces_cost_to_usage_callback(monkeypatch: Any) -> None:
+    """The streaming terminal frame's server-computed cost reaches usage_callback + total_usage."""
+    monkeypatch.setattr(client_mod.LLMClient, "_stream", _stream_costing)
+    seen: list[RawUsage] = []
+
+    async def usage_cb(usage: RawUsage) -> None:
+        seen.append(usage)
+
+    client = LLMClient(api_key="k", base_url="http://x", usage_callback=usage_cb)
+
+    async def drain() -> None:
+        async for _ in client.request(prompt="a").call_stream("m"):
+            pass
+
+    asyncio.run(drain())
+    assert len(seen) == 1
+    assert seen[0].input_cost == 0.01
+    assert seen[0].output_cost == 0.02
+    assert client.total_usage == pytest.approx(0.03)

@@ -106,6 +106,8 @@ class StreamChunk(BaseModel):
     input_tokens: int | None = None
     output_tokens: int | None = None
     cached_input_tokens: int | None = None
+    input_cost: float | None = None
+    output_cost: float | None = None
     tool_calls_delta: list[JsonDict] | None = None
     provider: str | None = None
     region: str | None = None
