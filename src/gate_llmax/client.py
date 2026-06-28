@@ -405,6 +405,7 @@ class LLMClient:
         speed: float = ...,
         max_tries: int | None = ...,
         timeout: int | None = ...,
+        operation: str = ...,
         cache_ttl: int | None = ...,
     ) -> TTSRequestBuilder: ...
 
@@ -423,6 +424,7 @@ class LLMClient:
         output_format: str = ...,
         max_tries: int | None = ...,
         timeout: int | None = ...,
+        operation: str = ...,
         cache_ttl: int | None = ...,
     ) -> AudioGenRequestBuilder: ...
 
@@ -444,6 +446,7 @@ class LLMClient:
         output_format: str = "mp3_44100_128",
         max_tries: int | None = None,
         timeout: int | None = None,
+        operation: str = "",
         cache_ttl: int | None = None,
     ) -> TTSRequestBuilder | AudioGenRequestBuilder:
         """Fluent builder for audio; ``.call(model)`` sends it. ``mode`` picks speech vs generative.
@@ -462,6 +465,7 @@ class LLMClient:
                 speed=speed,
                 max_tries=max_tries,
                 timeout=timeout,
+                operation=operation,
                 cache_ttl=ttl,
             )
             return TTSRequestBuilder(client=self, request=request, usage_callbacks=list(self._usage_callbacks), budget_check=self._budget)
@@ -478,6 +482,7 @@ class LLMClient:
             output_format=output_format,
             max_tries=max_tries,
             timeout=timeout,
+            operation=operation,
             cache_ttl=ttl,
         )
         return AudioGenRequestBuilder(client=self, request=request, usage_callbacks=list(self._usage_callbacks), budget_check=self._budget)
@@ -495,6 +500,7 @@ class LLMClient:
         end_image: str | None = None,
         max_tries: int | None = None,
         timeout: int | None = None,
+        operation: str = "",
         cache_ttl: int | None = None,
     ) -> VideoRequestBuilder:
         """Fluent builder for text/image-to-video; ``.call(model)`` sends it.
@@ -510,6 +516,7 @@ class LLMClient:
             end_image: Base64 last frame.
             max_tries: Per-call upstream attempts; overrides the model default.
             timeout: Per-call upstream timeout in seconds; overrides the model default.
+            operation: Caller-supplied usage tag, echoed onto the usage log row.
             cache_ttl: Response-cache lifetime in seconds; overrides the client default.
         """
         request = VideoRequest(
@@ -524,6 +531,7 @@ class LLMClient:
             end_image=end_image,
             max_tries=max_tries,
             timeout=timeout,
+            operation=operation,
             cache_ttl=self._resolve_cache_ttl(cache_ttl),
         )
         return VideoRequestBuilder(client=self, request=request, usage_callbacks=list(self._usage_callbacks), budget_check=self._budget)
@@ -581,13 +589,15 @@ class LLMClient:
         partial_images: int = 3,
         max_tries: int | None = None,
         timeout: int | None = None,
+        operation: str = "",
         cache_ttl: int | None = None,
     ) -> ImageRequestBuilder:
         """Fluent builder for image generation / edit; ``.call(model)`` sends it.
 
         Pass input images as raw bytes (``images``) and/or already-encoded base64
         (``b64_images``); supplying either switches the call to edit mode. ``cache_ttl`` /
-        ``max_tries`` / ``timeout`` default to the client's; the rest mirror ``ImageRequest``.
+        ``max_tries`` / ``timeout`` default to the client's; ``operation`` tags the usage row;
+        the rest mirror ``ImageRequest``.
         """
         encoded = [base64.b64encode(b).decode() for b in images or []] + list(b64_images or [])
         request = ImageRequest(
@@ -605,6 +615,7 @@ class LLMClient:
             partial_images=partial_images,
             max_tries=max_tries,
             timeout=timeout,
+            operation=operation,
             cache_ttl=self._resolve_cache_ttl(cache_ttl),
         )
         return ImageRequestBuilder(client=self, request=request, usage_callbacks=list(self._usage_callbacks), budget_check=self._budget)

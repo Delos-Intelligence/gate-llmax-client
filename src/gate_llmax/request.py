@@ -289,6 +289,29 @@ class MediaBuilder[ResponseT: LLMCallRecord](BaseModel):
         for cb in self.callbacks:
             await cb(response)
 
+    async def call(self, model: str) -> ResponseT:
+        """Send the request for ``model``. Each builder overrides this."""
+        raise NotImplementedError
+
+    async def call_prefer(self, models: list[str]) -> ResponseT:
+        """Try ``models`` in order, returning the first success — sequential, so only the winner bills.
+
+        Unlike a fan-out (which would call every model and bill them all), this runs one model at a
+        time and stops at the first success. Set per-attempt limits via the request's ``timeout`` /
+        ``max_tries``. The last error is re-raised when every model fails.
+        """
+        last_error: Exception | None = None
+        for model in models:
+            try:
+                return await self.call(model)
+            except (LLMModelNotFoundError, LLMServerError, LLMTimeoutError, TimeoutError) as exc:
+                logger.warning("call_prefer: model=%s failed (%s), trying next", model, exc)
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        msg = "call_prefer requires at least one model."
+        raise ValueError(msg)
+
 
 class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
     """Fluent helper from `LLMClient.request`; not constructed directly.

@@ -19,6 +19,7 @@ class CallControl(BaseModel):
 
     max_tries: int | None = Field(default=None, description="Per-call upstream attempts, including the first.")
     timeout: int | None = Field(default=None, description="Per-call upstream timeout in seconds.")
+    operation: str = Field(default="", description="Caller-supplied usage tag; echoed onto RawUsage and the usage log row.")
     cache_ttl: int | None = Field(
         default=None,
         description=(
@@ -202,10 +203,6 @@ class LLMRequest(CallControl):
             "client hashes the raw seed, so the gateway never sees the original value. "
             "Takes precedence over the X-Gate-Session-Id header."
         ),
-    )
-    operation: str = Field(
-        default="",
-        description="Caller-supplied usage tag; echoed onto RawUsage and the usage log row.",
     )
     smooth: bool = Field(
         default=False,
