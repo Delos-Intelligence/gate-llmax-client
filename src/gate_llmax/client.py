@@ -136,6 +136,13 @@ class LLMClient:
             timeout=timeout,
         )
 
+    def clear_usage_callbacks(self) -> None:
+        """Drop all usage callbacks so subsequent calls on this client are unbilled / untracked.
+
+        Useful for free-model endpoints: build the client, then disable its billing hook.
+        """
+        self._usage_callbacks.clear()
+
     def _resolve_cache_ttl(self, override: int | None) -> int | None:
         """Per-call ``cache_ttl`` wins when provided (``0`` forces off); else the client default."""
         return self._cache_ttl if override is None else override
