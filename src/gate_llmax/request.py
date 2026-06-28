@@ -200,10 +200,13 @@ async def select_best[I, R](
             task.cancel()
 
 
-def _parse_json(text: str, *, loose: bool) -> JsonDict | None:
-    """Parse ``text`` to a JSON dict. ``loose`` brace-slices around surrounding prose / fences; else strict."""
-    if loose:
-        return extract_json_from_text(text)
+def _parse_json(text: str, *, loose: bool, repair: bool = False) -> JsonDict | None:
+    """Parse ``text`` to a JSON dict. ``loose`` brace-slices around surrounding prose / fences; else strict.
+
+    ``repair`` adds an aggressive control-char / bad-escape repair pass for malformed JSON.
+    """
+    if loose or repair:
+        return extract_json_from_text(text, repair=repair)
     try:
         loaded = json.loads(text)
     except json.JSONDecodeError:
@@ -314,6 +317,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
     cache_ttl: int | None = None
     cast_json_enabled: bool = False
     loose_edges: bool = True
+    repair: bool = False
     response_format: JsonDict | None = None
     tools: list[JsonDict] | None = None
     tool_choice: str | JsonDict | None = None
@@ -392,7 +396,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             builder.response_format = {"type": "json_object"}
         return builder
 
-    def cast_json(self, *, loose_edges: bool = True) -> JsonRequestBuilder[JsonLLMResponse]:
+    def cast_json(self, *, loose_edges: bool = True, repair: bool = False) -> JsonRequestBuilder[JsonLLMResponse]:
         """Return a builder that parses every result's ``raw_text`` into ``json_response`` (a JSON dict).
 
         Sets ``response_format={'type':'json_object'}`` so providers that accept it force valid JSON;
@@ -401,17 +405,20 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
 
         ``loose_edges`` (default ``True``) tolerates prose / markdown fences around the JSON
         (brace-slices the first ``{...}``); set ``False`` to require the whole reply to be valid JSON.
+        ``repair`` (default ``False``) adds an aggressive control-char / bad-escape repair pass for
+        models that emit slightly malformed JSON.
         """
         builder = JsonRequestBuilder[JsonLLMResponse].model_construct(**self.__dict__)
         builder.cast_json_enabled = True
         builder.loose_edges = loose_edges
+        builder.repair = repair
         if builder.response_format is None:
             builder.response_format = {"type": "json_object"}
         return builder
 
     def _apply_cast_json(self, response: LLMResponse) -> None:
         if self.cast_json_enabled and response.json_object is None and response.raw_text:
-            response.json_object = _parse_json(response.raw_text, loose=self.loose_edges)
+            response.json_object = _parse_json(response.raw_text, loose=self.loose_edges, repair=self.repair)
 
     async def _call_raw(self, model: str, *, priority: int = 0, disable_usage: bool = False) -> LLMResponse:
         """One non-streaming turn: budget gate → send → cast_json → usage → callbacks. No finalize.
@@ -442,7 +449,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         )
         return self._finalize(raw)
 
-    async def call_stream(
+    async def call_stream(  # noqa: PLR0912
         self,
         model: str,
         *,
@@ -451,14 +458,17 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         smooth_duration_ms: int = 10,
         priority: int = 0,
         disable_usage: bool = False,
+        usage_chunks: bool = False,
     ) -> AsyncIterator[StreamChunk]:
         """Stream chunks for `model` (runs the tool loop when ``with_tools`` is set).
 
         ``smooth`` waits ``smooth_duration_ms`` after each text chunk — client-side, or
-        ``server_side=True`` to pace on the gateway. ``on_usage`` fires after the final
-        chunk (estimated input tokens on timeout/connection error, then re-raised).
+        ``server_side=True`` to pace on the gateway.
         ``disable_usage`` skips the usage callbacks for this stream only, so a billing-enabled
         client can make an unbilled call without ``clear_usage_callbacks()``.
+        ``usage_chunks`` controls when the usage callbacks fire: ``False`` (default) fires once at
+        the end with the final usage (one DB write per stream); ``True`` fires on every usage-bearing
+        chunk. Either way the chunks always carry their usage fields.
         """
         if self.tool_stream_executor is not None:
             async for chunk in self._stream_tool_loop_streaming(
@@ -467,12 +477,18 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
                 server_side=server_side,
                 smooth_duration_ms=smooth_duration_ms,
                 disable_usage=disable_usage,
+                usage_chunks=usage_chunks,
             ):
                 yield chunk
             return
         if self.tool_executor is not None:
             async for chunk in self._stream_tool_loop(
-                model, smooth=smooth, server_side=server_side, smooth_duration_ms=smooth_duration_ms, disable_usage=disable_usage
+                model,
+                smooth=smooth,
+                server_side=server_side,
+                smooth_duration_ms=smooth_duration_ms,
+                disable_usage=disable_usage,
+                usage_chunks=usage_chunks,
             ):
                 yield chunk
             return
@@ -502,6 +518,10 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
                         ttft_ms=chunk.ttft_ms,
                         operation=self.operation,
                     )
+                    if usage_chunks and not disable_usage:
+                        if self.on_usage is not None:
+                            await self.on_usage(final_usage)
+                        await self._fire_usage(final_usage)
                 yield chunk
                 if client_paces and chunk.text:
                     await asyncio.sleep(smooth_duration_ms / 1000)
@@ -513,8 +533,9 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
                     await self.on_usage(usage)
                 await self._fire_usage(usage)
             raise
+        # Default: fire once at the end (one DB write); ``usage_chunks`` already fired per chunk.
         usage = final_usage if final_usage is not None else RawUsage(model=model, estimated=True, operation=self.operation)
-        if not disable_usage:
+        if not disable_usage and not usage_chunks:
             if self.on_usage is not None:
                 await self.on_usage(usage)
             await self._fire_usage(usage)
@@ -835,12 +856,18 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         server_side: bool,
         smooth_duration_ms: int,
         disable_usage: bool = False,
+        usage_chunks: bool = False,
     ) -> AsyncIterator[StreamChunk]:
         """Streaming tool loop; yields each turn's chunks, runs tool calls between turns."""
         executor = self.tool_executor
         if executor is None:
             async for chunk in self.call_stream(
-                model, smooth=smooth, server_side=server_side, smooth_duration_ms=smooth_duration_ms, disable_usage=disable_usage
+                model,
+                smooth=smooth,
+                server_side=server_side,
+                smooth_duration_ms=smooth_duration_ms,
+                disable_usage=disable_usage,
+                usage_chunks=usage_chunks,
             ):
                 yield chunk
             return
@@ -852,7 +879,12 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             text_parts: list[str] = []
             acc: dict[int, ToolCall] = {}
             async for chunk in turn.call_stream(
-                model, smooth=smooth, server_side=server_side, smooth_duration_ms=smooth_duration_ms, disable_usage=disable_usage
+                model,
+                smooth=smooth,
+                server_side=server_side,
+                smooth_duration_ms=smooth_duration_ms,
+                disable_usage=disable_usage,
+                usage_chunks=usage_chunks,
             ):
                 if chunk.text:
                     text_parts.append(chunk.text)
@@ -875,6 +907,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         server_side: bool,
         smooth_duration_ms: int,
         disable_usage: bool = False,
+        usage_chunks: bool = False,
     ) -> AsyncIterator[StreamChunk]:
         """Streaming tool loop whose executor yields live progress.
 
@@ -886,7 +919,12 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         executor = self.tool_stream_executor
         if executor is None:
             async for chunk in self.call_stream(
-                model, smooth=smooth, server_side=server_side, smooth_duration_ms=smooth_duration_ms, disable_usage=disable_usage
+                model,
+                smooth=smooth,
+                server_side=server_side,
+                smooth_duration_ms=smooth_duration_ms,
+                disable_usage=disable_usage,
+                usage_chunks=usage_chunks,
             ):
                 yield chunk
             return
@@ -905,7 +943,12 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             text_parts: list[str] = []
             acc: dict[int, ToolCall] = {}
             async for chunk in turn.call_stream(
-                model, smooth=smooth, server_side=server_side, smooth_duration_ms=smooth_duration_ms, disable_usage=disable_usage
+                model,
+                smooth=smooth,
+                server_side=server_side,
+                smooth_duration_ms=smooth_duration_ms,
+                disable_usage=disable_usage,
+                usage_chunks=usage_chunks,
             ):
                 if chunk.text:
                     text_parts.append(chunk.text)
@@ -974,7 +1017,7 @@ class JsonRequestBuilder[ResponseT: JsonLLMResponse](RequestBuilder[ResponseT]):
         parsed = (
             response.json_object
             if response.json_object is not None
-            else (_parse_json(response.raw_text, loose=self.loose_edges) if response.raw_text else None)
+            else (_parse_json(response.raw_text, loose=self.loose_edges, repair=self.repair) if response.raw_text else None)
         )
         return cast("dict[str, Any] | None", parsed)
 

@@ -80,3 +80,33 @@ def test_streaming_surfaces_cost_to_usage_callback(monkeypatch: Any) -> None:
     assert seen[0].input_cost == 0.01
     assert seen[0].output_cost == 0.02
     assert client.total_usage == pytest.approx(0.03)
+
+
+async def _stream_two_usage_frames(self: LLMClient, request: LLMRequest, *, priority: int = 0):  # noqa: ARG001
+    """Stub yielding two usage-bearing frames (to distinguish per-chunk vs end firing)."""
+    yield StreamChunk(text="hi")
+    yield StreamChunk(input_tokens=5, output_tokens=5, input_cost=0.01, output_cost=0.0, provider="p")
+    yield StreamChunk(is_done=True, input_tokens=10, output_tokens=10, input_cost=0.02, output_cost=0.0, provider="p")
+
+
+def test_usage_chunks_controls_callback_frequency(monkeypatch: Any) -> None:
+    """Default fires once at the end; usage_chunks=True fires on every usage-bearing frame."""
+    monkeypatch.setattr(client_mod.LLMClient, "_stream", _stream_two_usage_frames)
+
+    def run(*, usage_chunks: bool) -> int:
+        seen: list[RawUsage] = []
+
+        async def cb(usage: RawUsage) -> None:
+            seen.append(usage)
+
+        client = LLMClient(api_key="k", base_url="http://x", usage_callback=cb)
+
+        async def drain() -> None:
+            async for _ in client.request(prompt="a").call_stream("m", usage_chunks=usage_chunks):
+                pass
+
+        asyncio.run(drain())
+        return len(seen)
+
+    assert run(usage_chunks=False) == 1  # one DB write at the end
+    assert run(usage_chunks=True) == 2  # one per usage-bearing frame
