@@ -200,6 +200,17 @@ async def select_best[I, R](
             task.cancel()
 
 
+def _parse_json(text: str, *, loose: bool) -> JsonDict | None:
+    """Parse ``text`` to a JSON dict. ``loose`` brace-slices around surrounding prose / fences; else strict."""
+    if loose:
+        return extract_json_from_text(text)
+    try:
+        loaded = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
 class JsonLLMResponse(LLMResponse):
     """A ``LLMResponse`` whose ``raw_text`` has been parsed into the ``json_response`` dict.
 
@@ -299,6 +310,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
     seed_routing: str | None = None
     cache_ttl: int | None = None
     cast_json_enabled: bool = False
+    loose_edges: bool = True
     response_format: JsonDict | None = None
     tools: list[JsonDict] | None = None
     tool_choice: str | JsonDict | None = None
@@ -377,22 +389,26 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             builder.response_format = {"type": "json_object"}
         return builder
 
-    def cast_json(self) -> JsonRequestBuilder[JsonLLMResponse]:
+    def cast_json(self, *, loose_edges: bool = True) -> JsonRequestBuilder[JsonLLMResponse]:
         """Return a builder that parses every result's ``raw_text`` into ``json_response`` (a JSON dict).
 
         Sets ``response_format={'type':'json_object'}`` so providers that accept it force valid JSON;
-        the result is a ``JsonLLMResponse`` (``raw_text`` + ``json_response``). ``.cast(T)`` is the
-        typed extension — it additionally validates the dict into ``T`` (``.value``).
+        the result is a ``JsonLLMResponse`` (``raw_text`` + ``json_response``, ``None`` when nothing
+        parsed — the response object is preserved, never raised). ``.cast(T)`` is the typed extension.
+
+        ``loose_edges`` (default ``True``) tolerates prose / markdown fences around the JSON
+        (brace-slices the first ``{...}``); set ``False`` to require the whole reply to be valid JSON.
         """
         builder = JsonRequestBuilder[JsonLLMResponse].model_construct(**self.__dict__)
         builder.cast_json_enabled = True
+        builder.loose_edges = loose_edges
         if builder.response_format is None:
             builder.response_format = {"type": "json_object"}
         return builder
 
     def _apply_cast_json(self, response: LLMResponse) -> None:
         if self.cast_json_enabled and response.json_object is None and response.raw_text:
-            response.json_object = extract_json_from_text(response.raw_text)
+            response.json_object = _parse_json(response.raw_text, loose=self.loose_edges)
 
     async def _call_raw(self, model: str, *, priority: int = 0) -> LLMResponse:
         """One non-streaming turn: budget gate → send → cast_json → usage → callbacks. No finalize."""
@@ -924,7 +940,7 @@ class JsonRequestBuilder[ResponseT: JsonLLMResponse](RequestBuilder[ResponseT]):
         """The effective JSON dict: server-set ``json_object`` if present, else parsed from ``raw_text``."""
         if response.json_object is not None:
             return response.json_object
-        return extract_json_from_text(response.raw_text) if response.raw_text else None
+        return _parse_json(response.raw_text, loose=self.loose_edges) if response.raw_text else None
 
     def _finalize(self, response: LLMResponse) -> ResponseT:
         return JsonLLMResponse.of(response, self._parsed_json(response))  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
