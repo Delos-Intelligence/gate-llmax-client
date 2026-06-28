@@ -37,3 +37,21 @@ def test_from_openai_plain_string_still_works() -> None:
     assert len(msg.content) == 1
     assert isinstance(msg.content[0], TextMessage)
     assert msg.content[0].text == "hello"
+
+
+def test_from_openai_tool_result_preserves_image() -> None:
+    msg = Message.from_openai(
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "name": "read_image",
+            "content": [
+                {"type": "text", "text": "here is the screenshot"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,WERF"}},
+            ],
+        },
+    )
+    assert msg.role == MessageRole.TOOL
+    assert msg.tool_call_id == "call_1"
+    assert msg.name == "read_image"
+    assert any(isinstance(b, ImageMessage) and b.b64 == "WERF" for b in msg.content)

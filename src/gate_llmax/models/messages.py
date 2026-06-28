@@ -115,7 +115,8 @@ class Message(BaseModel):
                 return cls.assistant_tool_calls([ToolCall.from_openai(tc) for tc in tool_calls], text)
             return cls(role=MessageRole.ASSISTANT, content=blocks or [TextMessage(text=text)])
         if role == "tool":
-            return cls.tool(tool_call_id or "", text, name=name)
+            # Tool results may carry images (e.g. a screenshot/read_image tool) — keep blocks.
+            return cls(role=MessageRole.TOOL, content=blocks or [TextMessage(text="")], tool_call_id=tool_call_id or "", name=name)
         return cls(role=MessageRole.USER, content=blocks or [TextMessage(text="")])
 
 
