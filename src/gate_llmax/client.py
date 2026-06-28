@@ -130,6 +130,7 @@ class LLMClient:
         self._cache_ttl = cache_ttl
         self._default_temperature = temperature
         self._usage_callbacks = [usage_callback] if usage_callback is not None else []
+        self._total_usage = 0.0
         # Always present — an unset RateLimit is a no-op, so call paths need no None-check.
         self._limiter = RateLimiter(rate_limit or RateLimit())
         self._budget = budget
@@ -148,6 +149,25 @@ class LLMClient:
         Useful for free-model endpoints: build the client, then disable its billing hook.
         """
         self._usage_callbacks.clear()
+
+    @property
+    def total_usage(self) -> float:
+        """Accumulated USD cost of every billed call on this client (the end-of-run total).
+
+        Each completed call adds its ``RawUsage.total_cost``; calls made with ``disable_usage=True``
+        are excluded. Mirrors the in-process library's per-run accumulator: bill once at the end of a
+        run with ``min(client.total_usage, cap)`` instead of per call. Call ``reset_total_usage()`` to
+        start a fresh window (not needed for a per-run client, which starts at ``0.0``).
+        """
+        return self._total_usage
+
+    def reset_total_usage(self) -> None:
+        """Reset the accumulated ``total_usage`` to ``0.0`` to start a new accounting window."""
+        self._total_usage = 0.0
+
+    def _record_usage(self, usage: RawUsage) -> None:
+        """Add one call's cost to ``total_usage`` — invoked by every builder's usage fire."""
+        self._total_usage += usage.total_cost
 
     def _resolve_cache_ttl(self, override: int | None) -> int | None:
         """Per-call ``cache_ttl`` wins when provided (``0`` forces off); else the client default."""

@@ -275,6 +275,7 @@ class MediaBuilder[ResponseT: LLMCallRecord](BaseModel):
             raise LLMBudgetError("Budget exceeded; call denied before dispatch.")
 
     async def _fire_usage(self, usage: RawUsage) -> None:
+        self.client._record_usage(usage)  # noqa: SLF001  (per-run cost accumulator → client.total_usage)
         for cb in self.usage_callbacks:
             await cb(usage)
 
