@@ -1,62 +1,55 @@
 # gate-llmax
 
-Python client SDK **and** shared types for the [Gate LLM Gateway](https://github.com/Delos-Intelligence/gate-llmax-client) — a
-unified API layer over multiple LLM providers (OpenAI, Azure, Bedrock, Gemini, ElevenLabs).
+Python client SDK and shared types for the [Gate LLM Gateway](https://github.com/Delos-Intelligence/gate-llmax-client) — one async API over OpenAI, Azure, Bedrock, Gemini and ElevenLabs.
 
-One import package, **`gate_llmax`**:
-
-- **`gate_llmax`** — the ergonomic async client SDK (`LLMClient`, request builders, streaming, token counting).
-- **`gate_llmax.models`** + **`gate_llmax.types`** — the shared Pydantic models and type aliases (`LLMRequest`,
-  `LLMResponse`, `Message`, `ModelInfo`, `StreamChunk`, `OutputStatus`, …). These are the data contracts the Gate
-  backend and any client share, so backends import them from here too.
-
-## Install
+## Installation
 
 ```bash
 pip install "gate-llmax @ git+https://github.com/Delos-Intelligence/gate-llmax-client"
 ```
 
-or with uv:
+## How to use
 
-```toml
-[project]
-dependencies = ["gate-llmax"]
-
-[tool.uv.sources]
-gate-llmax = { git = "https://github.com/Delos-Intelligence/gate-llmax-client", branch = "main" }
-```
-
-## Usage
+Create a client pointing at your Gate instance:
 
 ```python
 from gate_llmax import LLMClient
 
-async with LLMClient(base_url="https://your-gate-instance.com", api_key="your-key") as client:
-    response = await client.request(prompt="Hello!").call("gpt-4o")
-    print(response.raw_text)
+client = LLMClient(api_key="your-key", base_url="https://your-gate-instance.com")
 ```
 
-Streaming:
+Build a request and call a model:
 
 ```python
-async for chunk in client.request(prompt="...").call_stream("gpt-4o"):
-    print(chunk.delta, end="", flush=True)
+response = await client.request(prompt="Tell me a joke.").call("gpt-4o")
+print(response.raw_text)
 ```
 
-Importing shared types directly (e.g. from a backend):
+`request()` also takes a `system_prompt`, a full `messages` history, `images`, and per-call
+`specifics` (temperature, tools, …). To stream the reply as it is generated, use `call_stream`:
+
+```python
+async for chunk in client.request(prompt="Tell me a joke.").call_stream("gpt-4o"):
+    print(chunk.text, end="", flush=True)
+```
+
+The client owns an HTTP connection pool. Use it as an async context manager, or call
+`await client.close()` when you are done:
+
+```python
+async with LLMClient(api_key="your-key", base_url="https://your-gate-instance.com") as client:
+    response = await client.request(prompt="Hello!").call("gpt-4o")
+```
+
+## Shared types
+
+The same package ships the Pydantic models the Gate backend and its clients exchange, so a
+backend imports its data contracts straight from here:
 
 ```python
 from gate_llmax.models.request import LLMRequest
 from gate_llmax.models.response import LLMResponse
 from gate_llmax.types import OutputStatus
-```
-
-## Development
-
-```bash
-uv sync --group dev
-uv run pytest tests          # unit tests run offline; test_client.py needs a live Gate server (see tests/.env.example)
-uv run ruff check src tests
 ```
 
 ## Requirements

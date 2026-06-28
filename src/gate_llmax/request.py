@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
-from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -218,10 +218,11 @@ class JsonLLMResponse(LLMResponse):
     JSON result (raw_text + json_response + value).
     """
 
-    json_response: JsonDict | None = None
+    # ``dict[str, Any]`` (not ``JsonDict``) so call sites use values without casting, like ``json.loads``.
+    json_response: dict[str, Any] | None = None
 
     @classmethod
-    def of(cls, response: LLMResponse, json_response: JsonDict | None = None) -> JsonLLMResponse:
+    def of(cls, response: LLMResponse, json_response: dict[str, Any] | None = None) -> JsonLLMResponse:
         """Wrap a ``LLMResponse`` as a ``JsonLLMResponse`` carrying the parsed ``json_response``."""
         return cls.model_construct(**response.__dict__, json_response=json_response)
 
@@ -236,7 +237,7 @@ class TypedLLMResponse[T: BaseModel](JsonLLMResponse):
     value: T | None = None
 
     @classmethod
-    def of(cls, response: LLMResponse, json_response: JsonDict | None = None, value: T | None = None) -> TypedLLMResponse[T]:
+    def of(cls, response: LLMResponse, json_response: dict[str, Any] | None = None, value: T | None = None) -> TypedLLMResponse[T]:
         """Wrap a ``LLMResponse`` with its parsed ``json_response`` and validated ``value``."""
         return cls.model_construct(**response.__dict__, json_response=json_response, value=value)
 
@@ -968,11 +969,14 @@ class JsonRequestBuilder[ResponseT: JsonLLMResponse](RequestBuilder[ResponseT]):
     ``.cast_json()`` yields this; ``.cast(T)`` (``CastedRequestBuilder``) extends it with a typed value.
     """
 
-    def _parsed_json(self, response: LLMResponse) -> JsonDict | None:
+    def _parsed_json(self, response: LLMResponse) -> dict[str, Any] | None:
         """The effective JSON dict: server-set ``json_object`` if present, else parsed from ``raw_text``."""
-        if response.json_object is not None:
-            return response.json_object
-        return _parse_json(response.raw_text, loose=self.loose_edges) if response.raw_text else None
+        parsed = (
+            response.json_object
+            if response.json_object is not None
+            else (_parse_json(response.raw_text, loose=self.loose_edges) if response.raw_text else None)
+        )
+        return cast("dict[str, Any] | None", parsed)
 
     def _finalize(self, response: LLMResponse) -> ResponseT:
         return JsonLLMResponse.of(response, self._parsed_json(response))  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
