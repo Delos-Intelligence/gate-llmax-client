@@ -101,6 +101,7 @@ class StreamChunk(BaseModel):
     """Streaming chunk; `.choices` / `.usage` match OpenAI-style events."""
 
     text: str = ""
+    reasoning: str = ""
     is_done: bool = False
     finish_reason: str | None = None
     input_tokens: int | None = None
@@ -164,6 +165,7 @@ class StreamChunk(BaseModel):
     def from_openai(cls, chunk: Any) -> StreamChunk:
         """Build from an OpenAI ChatCompletionChunk."""
         text = ""
+        reasoning = ""
         is_done = False
         finish_reason = None
         input_tokens = None
@@ -175,6 +177,8 @@ class StreamChunk(BaseModel):
             if choice.delta:
                 if choice.delta.content:
                     text = choice.delta.content
+                # Reasoning streamed in a separate field (DeepSeek/GLM via OpenRouter).
+                reasoning = getattr(choice.delta, "reasoning", None) or getattr(choice.delta, "reasoning_content", None) or ""
                 if choice.delta.tool_calls:
                     # Plain dicts so StreamChunk stays JSON-serializable over SSE.
                     tool_calls_delta = [tc.model_dump() for tc in choice.delta.tool_calls]
@@ -192,6 +196,7 @@ class StreamChunk(BaseModel):
 
         return cls(
             text=text,
+            reasoning=reasoning,
             is_done=is_done,
             finish_reason=finish_reason,
             input_tokens=input_tokens,
