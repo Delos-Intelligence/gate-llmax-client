@@ -93,8 +93,9 @@ class Message(BaseModel):
     def from_openai(cls, message: Any) -> Message:
         """Build a Message from an OpenAI-shaped chat message — a dict or any object with the same fields.
 
-        Handles system / user / assistant (incl. ``tool_calls``) / tool turns. Text content only
-        (multimodal ``content`` lists are flattened to their text).
+        Handles system / user / assistant (incl. ``tool_calls``) / tool turns, including multimodal
+        ``content`` lists: ``text`` parts become ``TextMessage`` blocks and ``image_url`` parts become
+        ``ImageMessage`` blocks (data-URI base64 or remote URL). System / tool turns flatten to text.
         """
         if isinstance(message, dict):
             role, content = message.get("role"), message.get("content")
@@ -104,19 +105,44 @@ class Message(BaseModel):
             tool_calls = getattr(message, "tool_calls", None)
             tool_call_id, name = getattr(message, "tool_call_id", None), getattr(message, "name", None)
 
-        if isinstance(content, list):  # multimodal parts → keep the text
-            content = "\n".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text")
-        text = content or ""
+        blocks = _content_blocks(content)
+        text = "\n".join(b.text for b in blocks if isinstance(b, TextMessage))
 
         if role == "system":
             return cls.system(text)
         if role == "assistant":
             if tool_calls:
                 return cls.assistant_tool_calls([ToolCall.from_openai(tc) for tc in tool_calls], text)
-            return cls.assistant(text)
+            return cls(role=MessageRole.ASSISTANT, content=blocks or [TextMessage(text=text)])
         if role == "tool":
             return cls.tool(tool_call_id or "", text, name=name)
-        return cls.user(text)
+        return cls(role=MessageRole.USER, content=blocks or [TextMessage(text="")])
+
+
+def _content_blocks(content: Any) -> list[TextMessage | ImageMessage]:
+    """Parse OpenAI message ``content`` (str or multimodal list) into Gate content blocks.
+
+    ``image_url`` parts become ``ImageMessage`` (base64 from a ``data:`` URI, else the raw URL).
+    """
+    if content is None:
+        return []
+    if isinstance(content, str):
+        return [TextMessage(text=content)] if content else []
+    blocks: list[TextMessage | ImageMessage] = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "text":
+            blocks.append(TextMessage(text=part.get("text", "")))
+        elif part.get("type") == "image_url":
+            image_url = part.get("image_url") or {}
+            url = image_url.get("url", "")
+            detail = image_url.get("detail")
+            if url.startswith("data:") and ";base64," in url:
+                blocks.append(ImageMessage(b64=url.split(";base64,", 1)[1], detail=detail))
+            elif url:
+                blocks.append(ImageMessage(url=url, detail=detail))
+    return blocks
 
 
 def content_block_to_openai(block: TextMessage | ImageMessage) -> JsonDict:
