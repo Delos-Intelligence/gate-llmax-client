@@ -702,8 +702,11 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             await self._fire(response)
         return [self._finalize(r) for r in responses]
 
-    async def call_prefer(self, models: list[str]) -> ResponseT:
+    async def call_prefer(self, models: list[str], *, priority: int = 0) -> ResponseT:
         """Try models in order; advance to the next on failure or non-SUCCESS status.
+
+        ``priority`` orders each attempt in the rate-limit queue (higher first); it is
+        forwarded to every underlying ``call``.
 
         Fallback triggers (try next model):
         - ``LLMModelNotFoundError`` — model not configured in the gateway.
@@ -729,7 +732,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         last: ResponseT | None = None
         for model in models:
             try:
-                resp = await self.call(model)
+                resp = await self.call(model, priority=priority)
                 if resp.status == OutputStatus.SUCCESS:
                     return resp
                 # Non-SUCCESS: on_usage already fired by call(); record and try next.
