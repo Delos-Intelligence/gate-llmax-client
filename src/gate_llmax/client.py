@@ -150,6 +150,18 @@ class LLMClient:
         """
         self._usage_callbacks.clear()
 
+    def add_usage_callback(self, *callbacks: UsageCallback) -> None:
+        """Register extra ``RawUsage`` callbacks fired after every billed call on this client.
+
+        Runtime equivalent of the constructor's ``usage_callback`` — append a hook (e.g. a per-task
+        cost capture) without rebuilding the client. Pair with ``clear_usage_callbacks()`` to reset.
+        """
+        self._usage_callbacks.extend(callbacks)
+
+    def get_usage_callbacks(self) -> list[UsageCallback]:
+        """Return a shallow copy of the registered client-level usage callbacks (for inspection)."""
+        return list(self._usage_callbacks)
+
     @property
     def total_usage(self) -> float:
         """Accumulated USD cost of every billed call on this client (the end-of-run total).
