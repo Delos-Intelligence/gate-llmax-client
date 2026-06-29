@@ -32,7 +32,7 @@ def test_call_best_greatest_builds_best_target(monkeypatch: Any) -> None:
     monkeypatch.setattr(client_mod.LLMClient, "_send", send)
     client = LLMClient(api_key="k", base_url="http://x")
 
-    resp = asyncio.run(client.request(prompt="hi").call_best(["a", "b"], greatest="field_weight"))
+    resp = asyncio.run(client.request(prompt="hi", operation="test_best_target").call_best(["a", "b"], greatest="field_weight"))
     assert resp.raw_text == "best"
     target = captured["req"].target
     assert isinstance(target, BestTarget)
@@ -46,7 +46,7 @@ def test_call_best_lowest_direction(monkeypatch: Any) -> None:
     monkeypatch.setattr(client_mod.LLMClient, "_send", send)
     client = LLMClient(api_key="k", base_url="http://x")
 
-    asyncio.run(client.request(prompt="hi").call_best(["a", "b"], lowest="price"))
+    asyncio.run(client.request(prompt="hi", operation="test_best_target").call_best(["a", "b"], lowest="price"))
     target = captured["req"].target
     assert isinstance(target, BestTarget)
     assert target.attribute == "price"
@@ -56,4 +56,4 @@ def test_call_best_lowest_direction(monkeypatch: Any) -> None:
 def test_call_best_rejects_both() -> None:
     client = LLMClient(api_key="k", base_url="http://x")
     with pytest.raises(ValueError, match="not both"):
-        asyncio.run(client.request(prompt="hi").call_best(["a"], greatest="w", lowest="w"))
+        asyncio.run(client.request(prompt="hi", operation="test_best_target").call_best(["a"], greatest="w", lowest="w"))

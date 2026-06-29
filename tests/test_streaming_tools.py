@@ -48,7 +48,9 @@ def test_progress_surfaces_and_loop_retriggers(monkeypatch: Any) -> None:
         yield ToolResult(output="found 3", redo=True)
 
     client = LLMClient(api_key="k", base_url="http://x")
-    builder = client.request(prompt="hi").with_tools([{"type": "function", "function": {"name": "search"}}], stream_executor=executor)
+    builder = client.request(prompt="hi", operation="test_streaming_tools").with_tools(
+        [{"type": "function", "function": {"name": "search"}}], stream_executor=executor
+    )
     assert asyncio.run(_collect(builder)) == "thinking... [searching] final answer"
 
 
@@ -61,5 +63,7 @@ def test_redo_false_ends_the_loop(monkeypatch: Any) -> None:
         yield ToolResult(output="answer", redo=False)
 
     client = LLMClient(api_key="k", base_url="http://x")
-    builder = client.request(prompt="hi").with_tools([{"type": "function", "function": {"name": "search"}}], stream_executor=executor)
+    builder = client.request(prompt="hi", operation="test_streaming_tools").with_tools(
+        [{"type": "function", "function": {"name": "search"}}], stream_executor=executor
+    )
     assert asyncio.run(_collect(builder)) == "thinking... [done] "

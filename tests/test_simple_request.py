@@ -33,12 +33,12 @@ def test_flat_tuning_and_shared_call(monkeypatch: Any) -> None:
     monkeypatch.setattr(client_mod.LLMClient, "_send", send)
     client = LLMClient(api_key="k", base_url="http://x")
 
-    resp = asyncio.run(client.simple_request("hi", operation="op", temperature=0.2, max_tokens=64).call("m"))
+    resp = asyncio.run(client.simple_request("hi", operation="test_simple_request", temperature=0.2, max_tokens=64).call("m"))
     assert resp.raw_text == "hello"
     req = captured["req"]
     assert req.specifics.temperature == 0.2
     assert req.specifics.max_tokens == 64
-    assert req.operation == "op"
+    assert req.operation == "test_simple_request"
     assert isinstance(req.target, SingleTarget)
     assert req.target.model == "m"
     block = req.messages[0].content[0]
@@ -52,7 +52,7 @@ def test_cast_json_chains_to_parsed_dict(monkeypatch: Any) -> None:
     monkeypatch.setattr(client_mod.LLMClient, "_send", send)
     client = LLMClient(api_key="k", base_url="http://x")
 
-    resp = asyncio.run(client.simple_request("hi", temperature=0).cast_json().call("m"))
+    resp = asyncio.run(client.simple_request("hi", operation="test_simple_request", temperature=0).cast_json().call("m"))
     assert resp.json_response == {"a": 1}  # parsed — no manual json.loads on raw_text
     assert captured["req"].response_format == {"type": "json_object"}  # server-side JSON forced
 
@@ -63,7 +63,7 @@ def test_chains_with_call_prefer_and_fluent(monkeypatch: Any) -> None:
     monkeypatch.setattr(client_mod.LLMClient, "_send", send)
     client = LLMClient(api_key="k", base_url="http://x")
 
-    resp = asyncio.run(client.simple_request("hi", temperature=0).zone("EU").call_prefer(["a", "b"]))
+    resp = asyncio.run(client.simple_request("hi", operation="test_simple_request", temperature=0).zone("EU").call_prefer(["a", "b"]))
     assert resp.raw_text == "hello"
     req = captured["req"]
     assert isinstance(req.target, SingleTarget)

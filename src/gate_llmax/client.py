@@ -184,7 +184,8 @@ class LLMClient:
         timeout: int | None = None,
         max_tries: int | None = None,
         on_usage: OnUsage | None = None,
-        operation: str = "",
+        *,
+        operation: str,
         seed_routing: object | None = None,
         cache_ttl: int | None = None,
     ) -> RequestBuilder[LLMResponse]:
@@ -254,7 +255,7 @@ class LLMClient:
         max_tokens: int | None = None,
         top_p: float | None = None,
         reasoning_effort: ReasoningEffort | None = None,
-        operation: str = "",
+        operation: str,
         max_tries: int | None = None,
         timeout: int | None = None,
         seed_routing: object | None = None,
@@ -304,26 +305,30 @@ class LLMClient:
             budget_check=self._budget,
         )
 
-    def embed_request(
+    def embed(
         self,
         input: str | list[str],  # noqa: A002
         *,
+        operation: str,
         max_tries: int | None = None,
         timeout: int | None = None,
         cache_ttl: int | None = None,
     ) -> DirectRequestBuilder[EmbedResponse]:
         """Fluent builder for embeddings; ``.call(model)`` sends it.
 
-        ``input`` is one or more strings to embed. ``cache_ttl`` / ``max_tries`` / ``timeout``
-        default to the client's.
+        ``input`` is one or more strings to embed. ``operation`` tags the usage row.
+        ``cache_ttl`` / ``max_tries`` / ``timeout`` default to the client's.
         """
-        request = EmbedRequest(model="", input=input, max_tries=max_tries, timeout=timeout, cache_ttl=self._resolve_cache_ttl(cache_ttl))
+        request = EmbedRequest(
+            model="", input=input, operation=operation, max_tries=max_tries, timeout=timeout, cache_ttl=self._resolve_cache_ttl(cache_ttl)
+        )
         return self._direct_builder(request, "/v1/embeddings", "Embedding", EmbedResponse)
 
-    def transcribe_request(
+    def transcribe(
         self,
         audio_b64: str,
         *,
+        operation: str,
         language: str | None = None,
         response_format: str = "text",
         prompt: str | None = None,
@@ -334,13 +339,14 @@ class LLMClient:
     ) -> DirectRequestBuilder[AudioResponse]:
         """Fluent builder for audio transcription; ``.call(model)`` sends it.
 
-        ``audio_b64`` is base64 audio; ``language`` is a BCP-47 hint; ``response_format`` is one
-        of ``text`` / ``json`` / ``verbose_json`` / ``srt`` / ``vtt``. ``prompt`` biases decoding
-        (domain vocabulary, spelling); ``temperature`` sets the sampling temperature.
+        ``audio_b64`` is base64 audio; ``operation`` tags the usage row; ``language`` is a BCP-47
+        hint; ``response_format`` is one of ``text`` / ``json`` / ``verbose_json`` / ``srt`` / ``vtt``.
+        ``prompt`` biases decoding (domain vocabulary, spelling); ``temperature`` sets the sampling temperature.
         """
         request = AudioRequest(
             model="",
             audio=audio_b64,
+            operation=operation,
             language=language,
             response_format=response_format,
             prompt=prompt,
@@ -351,27 +357,32 @@ class LLMClient:
         )
         return self._direct_builder(request, "/v1/audio/transcriptions", "Audio transcription", AudioResponse)
 
-    def isolation_request(
+    def isolation(
         self,
         audio_b64: str,
         *,
+        operation: str,
         duration_seconds: float = 0.0,
         max_tries: int | None = None,
         timeout: int | None = None,
     ) -> DirectRequestBuilder[AudioIsolationResponse]:
         """Fluent builder for audio isolation; ``.call(model)`` sends it.
 
-        ``audio_b64`` is the base64 source; ``duration_seconds`` is used only for usage/billing.
+        ``audio_b64`` is the base64 source; ``operation`` tags the usage row;
+        ``duration_seconds`` is used only for usage/billing.
         """
-        request = AudioIsolationRequest(model="", audio=audio_b64, duration_seconds=duration_seconds, max_tries=max_tries, timeout=timeout)
+        request = AudioIsolationRequest(
+            model="", audio=audio_b64, operation=operation, duration_seconds=duration_seconds, max_tries=max_tries, timeout=timeout
+        )
         return self._direct_builder(request, "/v1/audio/isolation", "Audio isolation", AudioIsolationResponse)
 
-    def dub_request(
+    def dub(
         self,
         source_url: str,
         source_lang: str,
         target_lang: str,
         *,
+        operation: str,
         duration_seconds: float = 0.0,
         watermark: bool = False,
         max_tries: int | None = None,
@@ -379,14 +390,16 @@ class LLMClient:
     ) -> DirectRequestBuilder[DubbingResponse]:
         """Fluent builder for dubbing; ``.call(model)`` sends it (long-running).
 
-        ``source_url`` is publicly reachable media; ``source_lang`` / ``target_lang`` are
-        ISO-639-1 codes; ``duration_seconds`` is used only for usage/billing.
+        ``source_url`` is publicly reachable media; ``operation`` tags the usage row;
+        ``source_lang`` / ``target_lang`` are ISO-639-1 codes; ``duration_seconds`` is used
+        only for usage/billing.
         """
         request = DubbingRequest(
             model="",
             source_url=source_url,
             source_lang=source_lang,
             target_lang=target_lang,
+            operation=operation,
             duration_seconds=duration_seconds,
             watermark=watermark,
             max_tries=max_tries,
@@ -395,7 +408,7 @@ class LLMClient:
         return self._direct_builder(request, "/v1/audio/dubbing", "Dubbing", DubbingResponse, client_timeout=MEDIA_CLIENT_TIMEOUT)
 
     @overload
-    def audio_request(
+    def audio(
         self,
         mode: Literal["speech"],
         *,
@@ -405,12 +418,12 @@ class LLMClient:
         speed: float = ...,
         max_tries: int | None = ...,
         timeout: int | None = ...,
-        operation: str = ...,
+        operation: str,
         cache_ttl: int | None = ...,
     ) -> TTSRequestBuilder: ...
 
     @overload
-    def audio_request(
+    def audio(
         self,
         mode: AudioGenMode,
         *,
@@ -424,11 +437,11 @@ class LLMClient:
         output_format: str = ...,
         max_tries: int | None = ...,
         timeout: int | None = ...,
-        operation: str = ...,
+        operation: str,
         cache_ttl: int | None = ...,
     ) -> AudioGenRequestBuilder: ...
 
-    def audio_request(
+    def audio(
         self,
         mode: AudioMode,
         *,
@@ -446,7 +459,7 @@ class LLMClient:
         output_format: str = "mp3_44100_128",
         max_tries: int | None = None,
         timeout: int | None = None,
-        operation: str = "",
+        operation: str,
         cache_ttl: int | None = None,
     ) -> TTSRequestBuilder | AudioGenRequestBuilder:
         """Fluent builder for audio; ``.call(model)`` sends it. ``mode`` picks speech vs generative.
@@ -487,7 +500,7 @@ class LLMClient:
         )
         return AudioGenRequestBuilder(client=self, request=request, usage_callbacks=list(self._usage_callbacks), budget_check=self._budget)
 
-    def video_request(
+    def video(
         self,
         prompt: str,
         *,
@@ -500,7 +513,7 @@ class LLMClient:
         end_image: str | None = None,
         max_tries: int | None = None,
         timeout: int | None = None,
-        operation: str = "",
+        operation: str,
         cache_ttl: int | None = None,
     ) -> VideoRequestBuilder:
         """Fluent builder for text/image-to-video; ``.call(model)`` sends it.
@@ -541,7 +554,7 @@ class LLMClient:
         input: JsonValue,  # noqa: A002
         *,
         extra_body: JsonDict | None = None,
-        operation: str = "",
+        operation: str,
         max_tries: int | None = None,
         timeout: int | None = None,
     ) -> DirectRequestBuilder[ResponsesResponse]:
@@ -561,18 +574,19 @@ class LLMClient:
         client_timeout = float(timeout) + 30.0 if timeout is not None else None
         return self._direct_builder(request, "/v1/responses", "Responses", ResponsesResponse, client_timeout=client_timeout)
 
-    def vision_request(
+    def vision(
         self,
         images: list[str],
         *,
+        operation: str,
         max_tries: int | None = None,
         timeout: int | None = None,
     ) -> DirectRequestBuilder[VisionLLMResponse]:
-        """Fluent builder for vision OCR; ``.call(model)`` sends it. ``images`` are base64-encoded."""
-        request = VisionOCRRequest(model="", images=images, max_tries=max_tries, timeout=timeout)
+        """Fluent builder for vision OCR; ``.call(model)`` sends it. ``images`` are base64-encoded; ``operation`` tags the usage row."""
+        request = VisionOCRRequest(model="", images=images, operation=operation, max_tries=max_tries, timeout=timeout)
         return self._direct_builder(request, "/v1/vision/ocr", "Vision OCR", VisionLLMResponse)
 
-    def image_request(
+    def image(
         self,
         prompt: str,
         *,
@@ -589,7 +603,7 @@ class LLMClient:
         partial_images: int = 3,
         max_tries: int | None = None,
         timeout: int | None = None,
-        operation: str = "",
+        operation: str,
         cache_ttl: int | None = None,
     ) -> ImageRequestBuilder:
         """Fluent builder for image generation / edit; ``.call(model)`` sends it.

@@ -38,13 +38,13 @@ def test_disable_usage_skips_billing_but_keeps_it_registered(monkeypatch: Any) -
 
     client = LLMClient(api_key="k", base_url="http://x", usage_callback=usage_cb)
 
-    asyncio.run(client.request(prompt="a").call("m"))
+    asyncio.run(client.request(prompt="a", operation="test_disable_usage").call("m"))
     assert len(billed) == 1  # billed normally
 
-    asyncio.run(client.request(prompt="b").call("m", disable_usage=True))
+    asyncio.run(client.request(prompt="b", operation="test_disable_usage").call("m", disable_usage=True))
     assert len(billed) == 1  # the unbilled call did NOT fire the callback
 
-    asyncio.run(client.request(prompt="c").call("m"))
+    asyncio.run(client.request(prompt="c", operation="test_disable_usage").call("m"))
     assert len(billed) == 2  # callback still registered for later calls
 
 
@@ -57,7 +57,7 @@ def test_disable_usage_skips_per_request_on_usage(monkeypatch: Any) -> None:
         seen.append(usage)
 
     client = LLMClient(api_key="k", base_url="http://x")
-    asyncio.run(client.request(prompt="a", on_usage=on_usage).call("m", disable_usage=True))
+    asyncio.run(client.request(prompt="a", on_usage=on_usage, operation="test_disable_usage").call("m", disable_usage=True))
     assert seen == []
 
 
@@ -72,7 +72,7 @@ def test_call_stream_disable_usage_skips_billing(monkeypatch: Any) -> None:
     client = LLMClient(api_key="k", base_url="http://x", usage_callback=usage_cb)
 
     async def drain(*, disable_usage: bool) -> None:
-        async for _ in client.request(prompt="a").call_stream("m", disable_usage=disable_usage):
+        async for _ in client.request(prompt="a", operation="test_disable_usage").call_stream("m", disable_usage=disable_usage):
             pass
 
     asyncio.run(drain(disable_usage=False))

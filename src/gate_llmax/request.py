@@ -1075,7 +1075,7 @@ class CastedRequestBuilder[T: BaseModel](JsonRequestBuilder[TypedLLMResponse[T]]
 
 
 class ImageRequestBuilder(MediaBuilder[ImageResponse]):
-    """Fluent helper from ``LLMClient.image_request``; ``.call(model)`` / ``.call_stream(model)`` send it."""
+    """Fluent helper from ``LLMClient.image``; ``.call(model)`` / ``.call_stream(model)`` send it."""
 
     request: ImageRequest
 
@@ -1107,7 +1107,7 @@ class ImageRequestBuilder(MediaBuilder[ImageResponse]):
 
 
 class TTSRequestBuilder(MediaBuilder[BaseAudioResponse]):
-    """Speech builder from ``LLMClient.audio_request(mode='speech')``; supports ``.call`` and ``.call_stream``."""
+    """Speech builder from ``LLMClient.audio(mode='speech')``; supports ``.call`` and ``.call_stream``."""
 
     request: TTSRequest
 
@@ -1138,7 +1138,7 @@ class TTSRequestBuilder(MediaBuilder[BaseAudioResponse]):
 
 
 class AudioGenRequestBuilder(MediaBuilder[BaseAudioResponse]):
-    """Generative-audio builder from ``LLMClient.audio_request(mode='music'|'sound_effects'|'dialogue')``."""
+    """Generative-audio builder from ``LLMClient.audio(mode='music'|'sound_effects'|'dialogue')``."""
 
     request: AudioGenRequest
 
@@ -1155,7 +1155,7 @@ class AudioGenRequestBuilder(MediaBuilder[BaseAudioResponse]):
 
 
 class VideoRequestBuilder(MediaBuilder[VideoResponse]):
-    """Fluent helper from ``LLMClient.video_request``; ``.call(model)`` sends it (long-running, no stream)."""
+    """Fluent helper from ``LLMClient.video``; ``.call(model)`` sends it (long-running, no stream)."""
 
     request: VideoRequest
 

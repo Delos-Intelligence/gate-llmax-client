@@ -43,8 +43,8 @@ def test_total_usage_accumulates_and_resets(monkeypatch: Any) -> None:
     client = LLMClient(api_key="k", base_url="http://x")
     assert client.total_usage == 0.0
 
-    asyncio.run(client.request(prompt="a").call("m"))
-    asyncio.run(client.request(prompt="b").call("m"))
+    asyncio.run(client.request(prompt="a", operation="test_total_usage").call("m"))
+    asyncio.run(client.request(prompt="b", operation="test_total_usage").call("m"))
     assert client.total_usage == pytest.approx(0.06)  # 2 × (0.01 + 0.02)
 
     client.reset_total_usage()
@@ -56,8 +56,8 @@ def test_total_usage_excludes_disable_usage(monkeypatch: Any) -> None:
     monkeypatch.setattr(client_mod.LLMClient, "_send", _send_costing(0.01, 0.02))
     client = LLMClient(api_key="k", base_url="http://x")
 
-    asyncio.run(client.request(prompt="a").call("m"))
-    asyncio.run(client.request(prompt="b").call("m", disable_usage=True))
+    asyncio.run(client.request(prompt="a", operation="test_total_usage").call("m"))
+    asyncio.run(client.request(prompt="b", operation="test_total_usage").call("m", disable_usage=True))
     assert client.total_usage == pytest.approx(0.03)  # only the billed call counted
 
 
@@ -72,7 +72,7 @@ def test_streaming_surfaces_cost_to_usage_callback(monkeypatch: Any) -> None:
     client = LLMClient(api_key="k", base_url="http://x", usage_callback=usage_cb)
 
     async def drain() -> None:
-        async for _ in client.request(prompt="a").call_stream("m"):
+        async for _ in client.request(prompt="a", operation="test_total_usage").call_stream("m"):
             pass
 
     asyncio.run(drain())
@@ -102,7 +102,7 @@ def test_usage_chunks_controls_callback_frequency(monkeypatch: Any) -> None:
         client = LLMClient(api_key="k", base_url="http://x", usage_callback=cb)
 
         async def drain() -> None:
-            async for _ in client.request(prompt="a").call_stream("m", usage_chunks=usage_chunks):
+            async for _ in client.request(prompt="a", operation="test_total_usage").call_stream("m", usage_chunks=usage_chunks):
                 pass
 
         asyncio.run(drain())

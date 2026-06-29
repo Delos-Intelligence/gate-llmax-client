@@ -21,7 +21,7 @@ client = LLMClient(api_key="your-key", base_url="https://your-gate-instance.com"
 Build a request and call a model:
 
 ```python
-response = await client.request(prompt="Tell me a joke.").call("gpt-4o")
+response = await client.request(prompt="Tell me a joke.", operation="tell-joke").call("gpt-4o")
 print(response.raw_text)
 ```
 
@@ -29,7 +29,7 @@ print(response.raw_text)
 `specifics` (temperature, tools, …). To stream the reply as it is generated, use `call_stream`:
 
 ```python
-async for chunk in client.request(prompt="Tell me a joke.").call_stream("gpt-4o"):
+async for chunk in client.request(prompt="Tell me a joke.", operation="tell-joke").call_stream("gpt-4o"):
     print(chunk.text, end="", flush=True)
 ```
 
@@ -38,7 +38,7 @@ The client owns an HTTP connection pool. Use it as an async context manager, or 
 
 ```python
 async with LLMClient(api_key="your-key", base_url="https://your-gate-instance.com") as client:
-    response = await client.request(prompt="Hello!").call("gpt-4o")
+    response = await client.request(prompt="Hello!", operation="tell-joke").call("gpt-4o")
 ```
 
 ## Shared types

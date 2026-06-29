@@ -79,7 +79,7 @@ async def test_list_models(client: LLMClient) -> None:
 
 
 async def test_call(client: LLMClient) -> None:
-    resp = await client.request(prompt="Reply with just the word OK.").call(CHAT_MODEL)
+    resp = await client.request(operation="test_chat", prompt="Reply with just the word OK.").call(CHAT_MODEL)
     assert isinstance(resp, LLMResponse)
     assert resp.status == OutputStatus.SUCCESS
     assert isinstance(resp.raw_text, str)
@@ -89,7 +89,9 @@ async def test_call(client: LLMClient) -> None:
 
 async def test_call_stream(client: LLMClient) -> None:
     parts: list[str] = []
-    async for chunk in client.request(prompt="Count 1 to 3 separated by commas, no other text.").call_stream(CHAT_MODEL):
+    async for chunk in client.request(operation="test_chat", prompt="Count 1 to 3 separated by commas, no other text.").call_stream(
+        CHAT_MODEL
+    ):
         if chunk.text:
             parts.append(chunk.text)
         if chunk.is_done:
@@ -99,7 +101,7 @@ async def test_call_stream(client: LLMClient) -> None:
 
 
 async def test_multicall(client: LLMClient) -> None:
-    responses = await client.request(prompt="Reply with just the word OK.").multicall([CHAT_MODEL, CHAT_MODEL])
+    responses = await client.request(operation="test_chat", prompt="Reply with just the word OK.").multicall([CHAT_MODEL, CHAT_MODEL])
     assert len(responses) == 2
     assert all(isinstance(r, LLMResponse) for r in responses)
     assert all(r.status == OutputStatus.SUCCESS for r in responses)
@@ -120,6 +122,7 @@ async def test_cast(client: LLMClient) -> None:
         client.request(
             system_prompt='Reply with a single JSON object only, no markdown: {"city": string, "one_fact": string}.',
             prompt="Amsterdam",
+            operation="test_chat",
         )
         .cast(CityFact)
         .call(CHAT_MODEL)
@@ -138,7 +141,7 @@ async def test_cast(client: LLMClient) -> None:
 async def test_embed(client: LLMClient) -> None:
     if not EMBED_MODEL:
         pytest.skip("GATE_EMBED_MODEL not set")
-    resp = await client.embed_request("Hello world").call(EMBED_MODEL)
+    resp = await client.embed("Hello world", operation="test_embed").call(EMBED_MODEL)
     assert len(resp.data) > 0
     assert all(isinstance(v, float) for v in resp.data[0].embedding)
 
@@ -161,7 +164,7 @@ async def test_images_generate(client: LLMClient) -> None:
         seen_responses.append(r)
 
     resp = await (
-        client.image_request("a red square on white background", size=(1024, 1024))
+        client.image("a red square on white background", operation="test_images", size=(1024, 1024))
         .callback(on_response)
         .usage_callback(counter)
         .call(IMAGES_MODEL)
@@ -185,7 +188,9 @@ async def test_images_stream(client: LLMClient) -> None:
     frames = [
         f
         async for f in (
-            client.image_request("a green circle", size=(1024, 1024), partial_images=2).usage_callback(counter).call_stream(IMAGES_MODEL)
+            client.image("a green circle", operation="test_images", size=(1024, 1024), partial_images=2)
+            .usage_callback(counter)
+            .call_stream(IMAGES_MODEL)
         )
     ]
     assert len(frames) >= 1
@@ -211,7 +216,12 @@ async def test_tts_call(client: LLMClient) -> None:
     async def on_response(r: BaseAudioResponse) -> None:
         seen_responses.append(r)
 
-    resp = await client.audio_request("speech", text=text, voice=TTS_VOICE).callback(on_response).usage_callback(counter).call(TTS_MODEL)
+    resp = (
+        await client.audio("speech", operation="test_tts", text=text, voice=TTS_VOICE)
+        .callback(on_response)
+        .usage_callback(counter)
+        .call(TTS_MODEL)
+    )
     assert len(resp.audio) > 100
     assert resp.usage.input_tokens == len(text)
     assert len(seen_usages) == 1
@@ -222,7 +232,7 @@ async def test_tts_stream(client: LLMClient) -> None:
     if not TTS_MODEL:
         pytest.skip("GATE_TTS_MODEL not set")
     text = "Streaming hello from Gate."
-    chunks = [c async for c in client.audio_request("speech", text=text, voice=TTS_VOICE).call_stream(TTS_MODEL)]
+    chunks = [c async for c in client.audio("speech", operation="test_tts", text=text, voice=TTS_VOICE).call_stream(TTS_MODEL)]
     assert sum(len(c) for c in chunks) > 100
 
 
@@ -237,16 +247,16 @@ async def test_cache_roundtrip(client: LLMClient) -> None:
     Skips when the gateway has no cache configured (no REDIS_URL).
     """
     prompt = f"Reply with the single word KIWI. token={uuid.uuid4()}"
-    first = await client.request(prompt=prompt, cache_ttl=120).call(CHAT_MODEL)
-    second = await client.request(prompt=prompt, cache_ttl=120).call(CHAT_MODEL)
+    first = await client.request(operation="test_chat", prompt=prompt, cache_ttl=120).call(CHAT_MODEL)
+    second = await client.request(operation="test_chat", prompt=prompt, cache_ttl=120).call(CHAT_MODEL)
     if not second.cached:
         pytest.skip("gateway response cache not enabled (no REDIS_URL)")
     assert first.cached is False
     assert second.raw_text == first.raw_text
 
     plain_prompt = f"Reply with the single word KIWI. token={uuid.uuid4()}"
-    a = await client.request(prompt=plain_prompt).call(CHAT_MODEL)
-    b = await client.request(prompt=plain_prompt).call(CHAT_MODEL)
+    a = await client.request(operation="test_chat", prompt=plain_prompt).call(CHAT_MODEL)
+    b = await client.request(operation="test_chat", prompt=plain_prompt).call(CHAT_MODEL)
     assert a.cached is False
     assert b.cached is False
 
@@ -256,14 +266,14 @@ async def test_cache_client_default() -> None:
     cached_client = LLMClient(api_key=API_KEY, base_url=BASE_URL, cache_ttl=120)
     try:
         prompt = f"Reply with the single word PEAR. token={uuid.uuid4()}"
-        await cached_client.request(prompt=prompt).call(CHAT_MODEL)
-        second = await cached_client.request(prompt=prompt).call(CHAT_MODEL)
+        await cached_client.request(operation="test_chat", prompt=prompt).call(CHAT_MODEL)
+        second = await cached_client.request(operation="test_chat", prompt=prompt).call(CHAT_MODEL)
         if not second.cached:
             pytest.skip("gateway response cache not enabled (no REDIS_URL)")
         # Per-call cache_ttl=0 forces caching off even though the client default is on.
         off_prompt = f"Reply with the single word PEAR. token={uuid.uuid4()}"
-        await cached_client.request(prompt=off_prompt, cache_ttl=0).call(CHAT_MODEL)
-        again = await cached_client.request(prompt=off_prompt, cache_ttl=0).call(CHAT_MODEL)
+        await cached_client.request(operation="test_chat", prompt=off_prompt, cache_ttl=0).call(CHAT_MODEL)
+        again = await cached_client.request(operation="test_chat", prompt=off_prompt, cache_ttl=0).call(CHAT_MODEL)
         assert again.cached is False
     finally:
         await cached_client.close()
@@ -278,7 +288,7 @@ async def test_generate_audio_sound_effects(client: LLMClient) -> None:
     if not AUDIO_GEN_MODEL:
         pytest.skip("GATE_AUDIO_GEN_MODEL not set")
     prompt = "a short metallic click"
-    resp = await client.audio_request("sound_effects", prompt=prompt, duration_seconds=2.0).call(AUDIO_GEN_MODEL)
+    resp = await client.audio("sound_effects", operation="test_audio_gen", prompt=prompt, duration_seconds=2.0).call(AUDIO_GEN_MODEL)
     assert resp.model == AUDIO_GEN_MODEL  # Gate model name, not the upstream id
     assert len(base64.b64decode(resp.audio)) > 100
     assert resp.usage.input_tokens == len(prompt)
@@ -297,15 +307,15 @@ async def test_usage_callback_uniform(client: LLMClient) -> None:
         seen.append(u)
 
     # Chat
-    await client.request(prompt="Reply with just OK.").usage_callback(counter).call(CHAT_MODEL)
+    await client.request(operation="test_chat", prompt="Reply with just OK.").usage_callback(counter).call(CHAT_MODEL)
 
     # Images (skip if not configured)
     if IMAGES_MODEL:
-        await client.image_request("a tiny dot", size=(1024, 1024)).usage_callback(counter).call(IMAGES_MODEL)
+        await client.image("a tiny dot", operation="test_images", size=(1024, 1024)).usage_callback(counter).call(IMAGES_MODEL)
 
     # TTS (skip if not configured)
     if TTS_MODEL:
-        await client.audio_request("speech", text="hi", voice=TTS_VOICE).usage_callback(counter).call(TTS_MODEL)
+        await client.audio("speech", operation="test_tts", text="hi", voice=TTS_VOICE).usage_callback(counter).call(TTS_MODEL)
 
     expected = 1 + (1 if IMAGES_MODEL else 0) + (1 if TTS_MODEL else 0)
     assert len(seen) == expected
@@ -319,7 +329,9 @@ async def test_usage_callback_uniform(client: LLMClient) -> None:
 
 async def test_call_prefer_falls_back(client: LLMClient) -> None:
     """call_prefer skips an unknown model and returns the next working one (by its Gate name)."""
-    resp = await client.request(prompt="Reply with just OK.").call_prefer(["definitely-not-a-real-model-xyz", CHAT_MODEL])
+    resp = await client.request(operation="test_chat", prompt="Reply with just OK.").call_prefer(
+        ["definitely-not-a-real-model-xyz", CHAT_MODEL]
+    )
     assert resp.status == OutputStatus.SUCCESS
     assert resp.model == CHAT_MODEL  # the Gate model name, not the upstream deployment id
     assert resp.raw_text
@@ -327,7 +339,7 @@ async def test_call_prefer_falls_back(client: LLMClient) -> None:
 
 async def test_batch_multicall(client: LLMClient) -> None:
     """batch_multicall returns one SUCCESS response per model, in order."""
-    responses = await client.request(prompt="Reply with just OK.").batch_multicall([CHAT_MODEL, CHAT_MODEL])
+    responses = await client.request(operation="test_chat", prompt="Reply with just OK.").batch_multicall([CHAT_MODEL, CHAT_MODEL])
     assert len(responses) == 2
     assert all(isinstance(r, LLMResponse) for r in responses)
     assert all(r.status == OutputStatus.SUCCESS for r in responses)
@@ -335,14 +347,18 @@ async def test_batch_multicall(client: LLMClient) -> None:
 
 async def test_call_best_priority_skips_failed(client: LLMClient) -> None:
     """call_best (priority mode) excludes a failing model and returns the next working one."""
-    resp = await client.request(prompt="Reply with just OK.").call_best(["definitely-not-a-real-model-xyz", CHAT_MODEL])
+    resp = await client.request(operation="test_chat", prompt="Reply with just OK.").call_best(
+        ["definitely-not-a-real-model-xyz", CHAT_MODEL]
+    )
     assert resp.status == OutputStatus.SUCCESS
     assert resp.model == CHAT_MODEL
 
 
 async def test_call_best_key(client: LLMClient) -> None:
     """call_best with a score function returns the highest-scoring SUCCESS."""
-    resp = await client.request(prompt="Reply with just OK.").call_best([CHAT_MODEL, CHAT_MODEL], key=lambda r: len(r.raw_text))
+    resp = await client.request(operation="test_chat", prompt="Reply with just OK.").call_best(
+        [CHAT_MODEL, CHAT_MODEL], key=lambda r: len(r.raw_text)
+    )
     assert resp.status == OutputStatus.SUCCESS
     assert resp.raw_text
 
@@ -371,6 +387,7 @@ async def test_with_tools_executor(client: LLMClient) -> None:
         await client.request(
             system_prompt="To answer, you must call the get_secret_color tool, then reply with the color it returns.",
             prompt="What is the secret color?",
+            operation="test_chat",
         )
         .with_tools(SECRET_COLOR_TOOLS, executor)
         .call(CHAT_MODEL)
@@ -386,6 +403,7 @@ async def test_with_tools_no_executor(client: LLMClient) -> None:
         await client.request(
             system_prompt="You must call the get_secret_color tool to answer.",
             prompt="What is the secret color?",
+            operation="test_chat",
         )
         .with_tools(SECRET_COLOR_TOOLS)
         .call(CHAT_MODEL)
@@ -396,11 +414,11 @@ async def test_with_tools_no_executor(client: LLMClient) -> None:
 
 
 async def test_vision_ocr(client: LLMClient) -> None:
-    """vision_request(...).call() returns a typed VisionLLMResponse with recognised text lines."""
+    """vision(...).call() returns a typed VisionLLMResponse with recognised text lines."""
     if not VISION_MODEL:
         pytest.skip("GATE_VISION_MODEL not set")
     image_b64 = base64.standard_b64encode(POEM_PNG.read_bytes()).decode()
-    resp = await client.vision_request([image_b64]).call(VISION_MODEL)
+    resp = await client.vision([image_b64], operation="test_vision").call(VISION_MODEL)
     assert isinstance(resp, VisionLLMResponse)
     if resp.status == OutputStatus.NO_DEPLOYMENT:
         pytest.skip("vision deployment unavailable")
@@ -427,4 +445,4 @@ async def test_budget_denied(client: LLMClient) -> None:
         return False
 
     with pytest.raises(LLMBudgetError):
-        await client.request(prompt="hi").budget(deny).call(CHAT_MODEL)
+        await client.request(operation="test_chat", prompt="hi").budget(deny).call(CHAT_MODEL)

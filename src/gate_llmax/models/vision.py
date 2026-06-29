@@ -15,6 +15,7 @@ class VisionOCRRequest(BaseModel):
 
     model: str
     images: list[str] = Field(default_factory=list, description="Base64-encoded images to OCR.")
+    operation: str = Field(default="", description="Caller-supplied usage tag; echoed onto RawUsage and the usage log row.")
     max_tries: int | None = Field(default=None, description="Per-call upstream attempts, including the first.")
     timeout: int | None = Field(default=None, description="Per-call upstream timeout in seconds.")
 
