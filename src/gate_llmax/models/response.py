@@ -215,10 +215,35 @@ class StreamChunk(BaseModel):
         input_tokens = None
         output_tokens = None
         cached_input_tokens = None
+        tool_calls_delta = None
 
-        if event_type == "content_block_delta":
+        if event_type == "content_block_start":
+            # A tool_use block opens with its id + name; the argument JSON streams in
+            # the following input_json_delta events under the same content-block index.
+            # Emit an OpenAI-shaped opening delta so downstream accumulators (keyed by
+            # index) see the call — text blocks carry no content_block.type and are skipped.
+            block = event.get("content_block", {})
+            if block.get("type") == "tool_use":
+                tool_calls_delta = [
+                    {
+                        "index": event.get("index", 0),
+                        "id": block.get("id"),
+                        "type": "function",
+                        "function": {"name": block.get("name", ""), "arguments": ""},
+                    }
+                ]
+        elif event_type == "content_block_delta":
             delta = event.get("delta", {})
-            text = delta.get("text", "")
+            if delta.get("type") == "input_json_delta":
+                # One tool-argument JSON fragment; index matches the opening block.
+                tool_calls_delta = [
+                    {
+                        "index": event.get("index", 0),
+                        "function": {"arguments": delta.get("partial_json", "")},
+                    }
+                ]
+            else:
+                text = delta.get("text", "")
         elif event_type == "message_start":
             message = event.get("message", {})
             usage = message.get("usage", {})
@@ -243,6 +268,7 @@ class StreamChunk(BaseModel):
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cached_input_tokens=cached_input_tokens,
+            tool_calls_delta=tool_calls_delta,
         )
 
 
