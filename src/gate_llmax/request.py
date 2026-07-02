@@ -345,10 +345,10 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
     zone_selection: ZoneSelection | None = None
     operation: str = ""
     seed_routing: str | None = None
-    # When set, every call this builder makes (streamed, non-streamed, and each tool-loop
-    # turn) sends a FallbackTarget(prefer_models) instead of a SingleTarget: the gateway
-    # tries the models in order per inference — one request, server-side — preferring
-    # prefer_models[0]. Set via call_prefer / call_prefer_stream; propagated by model_copy.
+    # When set, every streamed call this builder makes (including each tool-loop turn) sends a
+    # FallbackTarget(prefer_models) instead of a SingleTarget: the gateway tries the models in
+    # order per inference — one request, server-side — preferring prefer_models[0]. Set via
+    # RequestBuilder.stream(...).call_prefer(...); propagated by model_copy.
     prefer_models: list[str] | None = None
     cache_ttl: int | None = None
     cast_json_enabled: bool = False
@@ -576,9 +576,8 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
                 await self.on_usage(usage)
             await self._fire_usage(usage)
 
-    async def call_prefer_stream(
+    def stream(
         self,
-        models: list[str],
         *,
         smooth: bool = False,
         server_side: bool = False,
@@ -586,26 +585,23 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         priority: int = 0,
         disable_usage: bool = False,
         usage_chunks: bool = False,
-    ) -> AsyncIterator[StreamChunk]:
-        """Stream with server-side model fallback — the streaming twin of ``call_prefer``.
+    ) -> StreamRequestBuilder:
+        """Enter streaming mode — the streamed counterpart of this builder.
 
-        Sends one ``FallbackTarget(models)`` request per inference, so the gateway tries the
-        models in order and commits to the first that emits a token (preferring ``models[0]``).
-        Runs the tool loop when ``with_tools`` is set, so every turn falls back independently;
-        deployment rotation within each model is handled gateway-side. No client-side re-send.
+        Streaming / pacing options are captured here; model selection stays on the returned
+        builder's terminals (``.call(model)`` / ``.call_prefer(models)``), which yield
+        ``StreamChunk``s. ``call_prefer`` reuses the same server-side ``FallbackTarget``
+        mechanism as a non-streamed ``call_prefer`` — one request, no client-side re-send.
         """
-        if not models:
-            return
-        async for chunk in self.model_copy(update={"prefer_models": models}).call_stream(
-            models[0],
+        return StreamRequestBuilder(
+            self,
             smooth=smooth,
             server_side=server_side,
             smooth_duration_ms=smooth_duration_ms,
             priority=priority,
             disable_usage=disable_usage,
             usage_chunks=usage_chunks,
-        ):
-            yield chunk
+        )
 
     def call_sync(self, model: str) -> ResponseT:
         """Blocking wrapper for `call`."""
@@ -1075,6 +1071,68 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             smooth=smooth_server_side,
             smooth_duration_ms=smooth_duration_ms,
         )
+
+
+class StreamRequestBuilder:
+    """Streaming view of a chat request, returned by ``RequestBuilder.stream(...)``.
+
+    Streaming is a request *mode*: the pacing / usage options are captured once here, and the
+    model-selection terminals mirror the non-streaming builder — ``call(model)`` (one model,
+    ``SingleTarget``) and ``call_prefer(models)`` (server-side ``FallbackTarget``) — but yield
+    ``StreamChunk``s. Both delegate to ``RequestBuilder.call_stream``, so streaming and
+    non-streaming share one prefer / tool-loop / deployment-rotation path.
+    """
+
+    def __init__(
+        self,
+        source: RequestBuilder[Any],
+        *,
+        smooth: bool,
+        server_side: bool,
+        smooth_duration_ms: int,
+        priority: int,
+        disable_usage: bool,
+        usage_chunks: bool,
+    ) -> None:
+        """Capture the source builder and streaming options (see ``RequestBuilder.stream``)."""
+        self._source = source
+        self._smooth = smooth
+        self._server_side = server_side
+        self._smooth_duration_ms = smooth_duration_ms
+        self._priority = priority
+        self._disable_usage = disable_usage
+        self._usage_chunks = usage_chunks
+
+    def _run(self, model: str, prefer: list[str] | None) -> AsyncIterator[StreamChunk]:
+        """Dispatch to ``call_stream`` with the captured options; ``prefer`` selects the target."""
+        source = self._source.model_copy(update={"prefer_models": prefer}) if prefer else self._source
+        return source.call_stream(
+            model,
+            smooth=self._smooth,
+            server_side=self._server_side,
+            smooth_duration_ms=self._smooth_duration_ms,
+            priority=self._priority,
+            disable_usage=self._disable_usage,
+            usage_chunks=self._usage_chunks,
+        )
+
+    async def call(self, model: str) -> AsyncIterator[StreamChunk]:
+        """Stream one model (``SingleTarget``)."""
+        async for chunk in self._run(model, None):
+            yield chunk
+
+    async def call_prefer(self, models: list[str]) -> AsyncIterator[StreamChunk]:
+        """Stream with server-side model fallback (``FallbackTarget``).
+
+        The gateway tries ``models`` in order per inference and commits to the first that emits
+        a token (preferring ``models[0]``) — one request, no client-side re-send. Reuses the
+        same mechanism as a non-streamed ``call_prefer``; runs the tool loop when ``with_tools``
+        is set, so every turn falls back independently.
+        """
+        if not models:
+            return
+        async for chunk in self._run(models[0], models):
+            yield chunk
 
 
 class JsonRequestBuilder[ResponseT: JsonLLMResponse](RequestBuilder[ResponseT]):
