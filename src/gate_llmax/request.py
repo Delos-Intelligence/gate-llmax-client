@@ -13,7 +13,15 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from gate_llmax.models.audio_gen import AudioGenRequest
 from gate_llmax.models.images import ImageData, ImageRequest, ImageResponse
 from gate_llmax.models.messages import Message, TextMessage
-from gate_llmax.models.request import BestTarget, LLMRequest, ParallelTarget, RequestSpecifics, SingleTarget, ZoneSelection
+from gate_llmax.models.request import (
+    BestTarget,
+    FallbackTarget,
+    LLMRequest,
+    ParallelTarget,
+    RequestSpecifics,
+    SingleTarget,
+    ZoneSelection,
+)
 from gate_llmax.models.response import BaseAudioResponse, LLMCallRecord, LLMResponse, RawUsage, StreamChunk, ToolCall
 from gate_llmax.models.tts import TTSRequest, TTSResponse
 from gate_llmax.models.video import VideoRequest, VideoResponse
@@ -337,6 +345,11 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
     zone_selection: ZoneSelection | None = None
     operation: str = ""
     seed_routing: str | None = None
+    # When set, every call this builder makes (streamed, non-streamed, and each tool-loop
+    # turn) sends a FallbackTarget(prefer_models) instead of a SingleTarget: the gateway
+    # tries the models in order per inference — one request, server-side — preferring
+    # prefer_models[0]. Set via call_prefer / call_prefer_stream; propagated by model_copy.
+    prefer_models: list[str] | None = None
     cache_ttl: int | None = None
     cast_json_enabled: bool = False
     loose_edges: bool = True
@@ -562,6 +575,37 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             if self.on_usage is not None:
                 await self.on_usage(usage)
             await self._fire_usage(usage)
+
+    async def call_prefer_stream(
+        self,
+        models: list[str],
+        *,
+        smooth: bool = False,
+        server_side: bool = False,
+        smooth_duration_ms: int = 10,
+        priority: int = 0,
+        disable_usage: bool = False,
+        usage_chunks: bool = False,
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream with server-side model fallback — the streaming twin of ``call_prefer``.
+
+        Sends one ``FallbackTarget(models)`` request per inference, so the gateway tries the
+        models in order and commits to the first that emits a token (preferring ``models[0]``).
+        Runs the tool loop when ``with_tools`` is set, so every turn falls back independently;
+        deployment rotation within each model is handled gateway-side. No client-side re-send.
+        """
+        if not models:
+            return
+        async for chunk in self.model_copy(update={"prefer_models": models}).call_stream(
+            models[0],
+            smooth=smooth,
+            server_side=server_side,
+            smooth_duration_ms=smooth_duration_ms,
+            priority=priority,
+            disable_usage=disable_usage,
+            usage_chunks=usage_chunks,
+        ):
+            yield chunk
 
     def call_sync(self, model: str) -> ResponseT:
         """Blocking wrapper for `call`."""
@@ -1009,8 +1053,9 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
                 return
 
     def _build_request(self, model: str, stream: bool, *, smooth_server_side: bool = False, smooth_duration_ms: int = 0) -> LLMRequest:
+        target = FallbackTarget(models=self.prefer_models) if self.prefer_models else SingleTarget(model=model)
         return LLMRequest(
-            target=SingleTarget(model=model),
+            target=target,
             system_prompt=self.system_prompt,
             messages=self.messages,
             tools=self.tools,
