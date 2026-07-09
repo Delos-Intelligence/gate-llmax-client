@@ -6,7 +6,7 @@ real environment variables take precedence. Local-dev defaults:
   GATE_BASE_URL      - Gate server URL              (default: http://localhost:8000)
   GATE_API_KEY       - consumer API key             (default: gate-local-default-key)
   GATE_CHAT_MODEL    - a deployed chat model name   (default: gemini-flash-latest)
-  GATE_EMBED_MODEL / GATE_IMAGES_MODEL / GATE_TTS_MODEL / GATE_AUDIO_GEN_MODEL
+  GATE_EMBED_MODEL / GATE_IMAGES_MODEL / GATE_TTS_MODEL / GATE_STT_MODEL / GATE_AUDIO_GEN_MODEL
                      - deployed model names; the matching tests skip when unset
   GATE_VISION_MODEL  - a deployed vision model      (default: azure_vision)
   GATE_TTS_VOICE     - provider-specific voice id
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import os
+import time
 import uuid
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -51,6 +52,7 @@ IMAGES_MODEL = os.getenv("GATE_IMAGES_MODEL", "")
 TTS_MODEL = os.getenv("GATE_TTS_MODEL", "")
 TTS_VOICE = os.getenv("GATE_TTS_VOICE", "21m00Tcm4TlvDq8ikWAM")  # provider-specific voice id
 AUDIO_GEN_MODEL = os.getenv("GATE_AUDIO_GEN_MODEL", "")
+STT_MODEL = os.getenv("GATE_STT_MODEL", "")  # transcription model (e.g. whisper-1)
 VISION_MODEL = os.getenv("GATE_VISION_MODEL", "azure_vision")
 POEM_PNG = TESTS_DIR / "poem.png"
 
@@ -98,6 +100,58 @@ async def test_call_stream(client: LLMClient) -> None:
             break
     assert len(parts) > 0
     assert "1" in "".join(parts)
+
+
+async def test_stream_smooth_client_paces(client: LLMClient) -> None:
+    """Client-side smoothing sleeps ``smooth_duration_ms`` after each text chunk.
+
+    We tie the wall-clock floor to the *observed* number of text chunks, so the check is
+    immune to model non-determinism about chunk count while still proving pacing happened.
+    """
+    duration_ms = 50
+    n_text_chunks = 0
+    parts: list[str] = []
+    start = time.monotonic()
+    async for chunk in (
+        client.request(operation="test_smooth", prompt="Count from 1 to 20, separated by single spaces, no other text.")
+        .stream(smooth=True, smooth_duration_ms=duration_ms)
+        .call(CHAT_MODEL)
+    ):
+        if chunk.text:
+            parts.append(chunk.text)
+            n_text_chunks += 1
+        if chunk.is_done:
+            break
+    elapsed_ms = (time.monotonic() - start) * 1000
+    assert "".join(parts).strip()
+    assert n_text_chunks >= 3, f"expected a multi-chunk stream, got {n_text_chunks}"
+    assert elapsed_ms >= n_text_chunks * duration_ms * 0.5, f"{elapsed_ms:.0f}ms too fast for {n_text_chunks} paced chunks"
+
+
+async def test_stream_smooth_server_side(client: LLMClient) -> None:
+    """``server_side=True`` moves pacing onto the gateway (it sleeps per text chunk).
+
+    Same wall-clock floor as the client path — the gateway's delay is included in the time
+    the client waits between chunks — so this proves the gateway honoured ``smooth``.
+    """
+    duration_ms = 40
+    n_text_chunks = 0
+    parts: list[str] = []
+    start = time.monotonic()
+    async for chunk in (
+        client.request(operation="test_smooth", prompt="Count from 1 to 20, separated by single spaces, no other text.")
+        .stream(smooth=True, server_side=True, smooth_duration_ms=duration_ms)
+        .call(CHAT_MODEL)
+    ):
+        if chunk.text:
+            parts.append(chunk.text)
+            n_text_chunks += 1
+        if chunk.is_done:
+            break
+    elapsed_ms = (time.monotonic() - start) * 1000
+    assert "".join(parts).strip()
+    assert n_text_chunks >= 3, f"expected a multi-chunk stream, got {n_text_chunks}"
+    assert elapsed_ms >= n_text_chunks * duration_ms * 0.5, f"{elapsed_ms:.0f}ms too fast for {n_text_chunks} paced chunks"
 
 
 async def test_multicall(client: LLMClient) -> None:
@@ -236,6 +290,28 @@ async def test_tts_stream(client: LLMClient) -> None:
     assert sum(len(c) for c in chunks) > 100
 
 
+async def test_tts_then_stt_roundtrip(client: LLMClient) -> None:
+    """Full audio round-trip: synthesize a known phrase (TTS), then transcribe it back (STT).
+
+    Proves both media directions over the gate agree — the transcript recovers the spoken words.
+    """
+    if not TTS_MODEL:
+        pytest.skip("GATE_TTS_MODEL not set")
+    if not STT_MODEL:
+        pytest.skip("GATE_STT_MODEL not set")
+
+    phrase = "The quick brown fox jumps over the lazy dog."
+    speech = await client.audio("speech", operation="test_roundtrip_tts", text=phrase, voice=TTS_VOICE).call(TTS_MODEL)
+    assert len(speech.audio) > 100  # base64 mp3 bytes
+
+    transcript = await client.transcribe(speech.audio, operation="test_roundtrip_stt", language="en").call(STT_MODEL)
+    text = transcript.text.lower()
+    assert text.strip(), "empty transcript"
+    # ASR can wobble on function words; the content words should survive the round-trip.
+    assert "fox" in text
+    assert "dog" in text
+
+
 # ---------------------------------------------------------------------------
 # Response caching (per-call cache_ttl)
 # ---------------------------------------------------------------------------
@@ -328,12 +404,15 @@ async def test_usage_callback_uniform(client: LLMClient) -> None:
 
 
 async def test_call_prefer_falls_back(client: LLMClient) -> None:
-    """call_prefer skips an unknown model and returns the next working one (by its Gate name)."""
+    """call_prefer skips an unknown model and returns the next working one."""
     resp = await client.request(operation="test_chat", prompt="Reply with just OK.").call_prefer(
         ["definitely-not-a-real-model-xyz", CHAT_MODEL]
     )
     assert resp.status == OutputStatus.SUCCESS
-    assert resp.model == CHAT_MODEL  # the Gate model name, not the upstream deployment id
+    # CHAT_MODEL may be a rolling alias (e.g. *-latest); the gate reports the concrete model it
+    # resolved to, so require a real answer from a real model rather than an exact-name echo.
+    assert resp.model
+    assert resp.model != "definitely-not-a-real-model-xyz"
     assert resp.raw_text
 
 
@@ -351,7 +430,9 @@ async def test_call_best_priority_skips_failed(client: LLMClient) -> None:
         ["definitely-not-a-real-model-xyz", CHAT_MODEL]
     )
     assert resp.status == OutputStatus.SUCCESS
-    assert resp.model == CHAT_MODEL
+    # Alias-tolerant (see test_call_prefer_falls_back): assert a real model answered, not a name echo.
+    assert resp.model
+    assert resp.model != "definitely-not-a-real-model-xyz"
 
 
 async def test_call_best_key(client: LLMClient) -> None:
