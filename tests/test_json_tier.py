@@ -48,6 +48,33 @@ def test_unparseable_text_yields_none() -> None:
     assert c.value is None
 
 
+def test_cast_list_parses_top_level_array() -> None:
+    """`.cast(list[T])` parses a top-level JSON array into a list of validated models (fences stripped)."""
+    out = CastedRequestBuilder.model_construct(client=None, model_type=list[Weather])._finalize(
+        _ok('```json\n[{"city":"Paris","temp":20},{"city":"Lyon","temp":18}]\n```'),
+    )
+    assert isinstance(out, TypedLLMResponse)
+    assert out.value == [Weather(city="Paris", temp=20), Weather(city="Lyon", temp=18)]
+
+
+def test_cast_list_unwraps_wrapper_and_rejects_non_array() -> None:
+    """`.cast(list[T])` unwraps a single-key `{"items":[...]}` object; a bare object yields None."""
+    wrapped = CastedRequestBuilder.model_construct(client=None, model_type=list[Weather])._finalize(
+        _ok('{"items": [{"city":"Nice","temp":25}]}'),
+    )
+    assert wrapped.value == [Weather(city="Nice", temp=25)]
+    bare = CastedRequestBuilder.model_construct(client=None, model_type=list[Weather])._finalize(
+        _ok('{"city":"x","temp":1}'),
+    )
+    assert bare.value is None
+
+
+def test_cast_list_of_primitives() -> None:
+    """`.cast(list[int])` validates a JSON array of primitives (indices, tags, …), not just models."""
+    out = CastedRequestBuilder.model_construct(client=None, model_type=list[int])._finalize(_ok("[1, 3, 5]"))
+    assert out.value == [1, 3, 5]
+
+
 def test_server_json_object_is_preferred() -> None:
     """A server-set json_object (e.g. vision OCR) flows into json_response without re-parsing raw_text."""
     resp = LLMResponse(raw_text="", status=OutputStatus.SUCCESS, json_object={"server": True})

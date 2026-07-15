@@ -6,9 +6,9 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
-from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar, cast, get_origin, overload
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from gate_llmax.models.audio_gen import AudioGenRequest
 from gate_llmax.models.images import ImageData, ImageRequest, ImageResponse
@@ -35,7 +35,7 @@ from .exceptions import (
     LLMTimeoutError,
 )
 from .multicall import execute_multicall
-from .parsing import extract_json_from_text
+from .parsing import extract_json_from_text, extract_json_list_from_text
 from .tokens import count, estimate_input_tokens
 
 if TYPE_CHECKING:
@@ -238,8 +238,11 @@ class JsonLLMResponse(LLMResponse):
         return cls.model_construct(**response.__dict__, json_response=json_response)
 
 
-class TypedLLMResponse[T: BaseModel](JsonLLMResponse):
+class TypedLLMResponse[T](JsonLLMResponse):
     """A ``JsonLLMResponse`` plus the parsed Pydantic ``value`` (``None`` when parsing failed).
+
+    ``T`` is a Pydantic model (``.cast(Model)``) or a list of them (``.cast(list[Model])``),
+    so ``value`` is the model or ``list`` of models.
 
     Access response fields directly (``typed.raw_text``, ``typed.json_response``, ``typed.status``)
     and the parsed object via ``typed.value``.
@@ -435,9 +438,18 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         self.tool_max_tokens_before_use = max_tokens_before_tool_use
         return self
 
-    def cast(self, model_type: type[T]) -> CastedRequestBuilder[T]:
-        """Return a copy of this builder that parses every result into ``model_type`` (forces JSON output)."""
-        builder = CastedRequestBuilder[T].model_construct(**self.__dict__, model_type=model_type)
+    @overload
+    def cast(self, model_type: type[T]) -> CastedRequestBuilder[T]: ...
+    @overload
+    def cast(self, model_type: type[list[T]]) -> CastedRequestBuilder[list[T]]: ...
+    def cast(self, model_type: Any) -> CastedRequestBuilder[Any]:
+        """Return a copy of this builder that parses every result into ``model_type`` (forces JSON output).
+
+        ``model_type`` is a Pydantic model, or ``list[Model]`` to parse a top-level JSON
+        array into a ``list`` of that model (each element validated). ``.value`` is ``None``
+        when nothing parses.
+        """
+        builder = CastedRequestBuilder[Any].model_construct(**self.__dict__, model_type=model_type)
         if builder.response_format is None:
             builder.response_format = {"type": "json_object"}
         return builder
@@ -1169,25 +1181,42 @@ class JsonRequestBuilder[ResponseT: JsonLLMResponse](RequestBuilder[ResponseT]):
         return JsonLLMResponse.of(response, self._parsed_json(response))  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
 
-class CastedRequestBuilder[T: BaseModel](JsonRequestBuilder[TypedLLMResponse[T]]):
-    """Typed builder: a JSON request that also validates the parsed dict into ``T`` (``.value``).
+class CastedRequestBuilder[T](JsonRequestBuilder[TypedLLMResponse[T]]):
+    """Typed builder: a JSON request that also validates the parsed output into ``T`` (``.value``).
 
-    Inherits every ``call`` / ``multicall`` / ``call_prefer`` / ``call_best`` variant and only
-    overrides ``_finalize``. ``key`` / ``accept`` callbacks receive the typed result, so you can
-    rank by ``.value``.
+    ``T`` is a Pydantic model (``.cast(Model)`` — parses a JSON object) or ``list[Model]``
+    (``.cast(list[Model])`` — parses a top-level JSON array, each element validated). Inherits
+    every ``call`` / ``multicall`` / ``call_prefer`` / ``call_best`` variant and only overrides
+    ``_finalize``. ``key`` / ``accept`` callbacks receive the typed result, so you can rank by ``.value``.
     """
 
-    model_type: type[T]
+    # A Pydantic model class, or a ``list[Model]`` alias (validated element-wise).
+    model_type: Any
 
     def _finalize(self, response: LLMResponse) -> TypedLLMResponse[T]:
+        if get_origin(self.model_type) is list:
+            return self._finalize_list(response)
         parsed = self._parsed_json(response)
-        value: T | None = None
+        value: Any = None
         if response.status == OutputStatus.SUCCESS and parsed is not None:
             try:
                 value = self.model_type.model_validate(parsed)
             except ValidationError:
                 value = None
         return TypedLLMResponse.of(response, parsed, value)
+
+    def _finalize_list(self, response: LLMResponse) -> TypedLLMResponse[T]:
+        value: Any = None
+        if response.status == OutputStatus.SUCCESS:
+            items = extract_json_list_from_text(response.raw_text, repair=self.repair)
+            if items is not None:
+                try:
+                    # ``TypeAdapter`` validates the whole ``list[...]`` — element type may be a
+                    # Pydantic model, a primitive (``list[int]``), or ``dict`` (``list[dict]``).
+                    value = TypeAdapter(self.model_type).validate_python(items)
+                except ValidationError:
+                    value = None
+        return TypedLLMResponse.of(response, None, value)
 
 
 # ---------------------------------------------------------------------------

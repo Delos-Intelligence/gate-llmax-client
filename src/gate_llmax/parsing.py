@@ -92,6 +92,52 @@ def extract_json_from_text(text: str, *, repair: bool = False) -> dict[str, Any]
     return _repair_and_load(text) if repair else None
 
 
+def _coerce_to_list(loaded: Any) -> list[Any] | None:
+    """A top-level list, or the list inside a single-key wrapper (``{"items": [...]}``)."""
+    if isinstance(loaded, list):
+        return loaded
+    if isinstance(loaded, dict) and len(loaded) == 1:
+        (inner,) = loaded.values()
+        if isinstance(inner, list):
+            return inner
+    return None
+
+
+def extract_json_list_from_text(text: str, *, repair: bool = False) -> list[Any] | None:
+    """Best-effort top-level JSON-*array* extraction from arbitrary assistant text.
+
+    The array analogue of :func:`extract_json_from_text` (for models cast as
+    ``list[Model]``): strips reasoning tags + markdown fences, tries ``json.loads``,
+    then bracket-slices the first ``[ ... ]``. Also unwraps a single-key object whose
+    value is a list (``{"items": [...]}``). Returns ``None`` when nothing parses to a
+    list. ``repair`` is accepted for signature parity with the object extractor.
+    """
+    _ = repair  # object-only aggressive repair does not apply to arrays
+    if not text:
+        return None
+
+    cleaned = _REASONING_TAGS_RE.sub("", text)
+    cleaned = cleaned.replace("```json", "").replace("```", "").strip()
+    if not cleaned:
+        return None
+
+    try:
+        result = _coerce_to_list(json.loads(cleaned))
+    except json.JSONDecodeError:
+        result = None
+    if result is not None:
+        return result
+
+    first_bracket = cleaned.find("[")
+    last_bracket = cleaned.rfind("]")
+    if first_bracket != -1 and last_bracket != -1 and last_bracket >= first_bracket:
+        try:
+            return _coerce_to_list(json.loads(cleaned[first_bracket : last_bracket + 1]))
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
 def parse_gate_text_to_model[T: BaseModel](raw_text: str, model_type: type[T]) -> T | None:
     """Parse ``LLMResponse.raw_text`` into ``model_type`` (JSON extract + ``model_validate``)."""
     parsed = extract_json_from_text(raw_text)
