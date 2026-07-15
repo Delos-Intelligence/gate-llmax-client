@@ -1257,6 +1257,54 @@ class ImageRequestBuilder(MediaBuilder[ImageResponse]):
         synth = ImageResponse(model=request.model, data=frames, usage=terminal_usage or RawUsage(model=request.model))
         await self._fire(synth)
 
+    def stream(self) -> ImageStreamBuilder:
+        """Streaming view: ``.stream().call(model)`` / ``.stream().call_prefer(models)`` yield partial ``ImageData`` frames.
+
+        Mirrors the chat builder's ``.stream()`` so an image request can be built once and then
+        either streamed (progressive partial frames) or sent directly via ``.call``/``.call_prefer``.
+        """
+        return ImageStreamBuilder(self)
+
+
+class ImageStreamBuilder:
+    """Streaming view of an image request, returned by ``ImageRequestBuilder.stream()``.
+
+    ``call(model)`` streams partial ``ImageData`` frames for one model. ``call_prefer(models)`` adds
+    client-side fallback: it tries ``models`` in order but, since emitted frames cannot be un-yielded,
+    commits to the first model that produces a frame — falling back only when a model fails *before*
+    its first frame. The last pre-frame error is re-raised when every model fails.
+    """
+
+    def __init__(self, source: ImageRequestBuilder) -> None:
+        """Capture the source image builder whose request/callbacks this streams."""
+        self._source = source
+
+    async def call(self, model: str) -> AsyncIterator[ImageData]:
+        """Stream partial frames for a single ``model``."""
+        async for frame in self._source.call_stream(model):
+            yield frame
+
+    async def call_prefer(self, models: list[str]) -> AsyncIterator[ImageData]:
+        """Stream partial frames, committing to the first model that emits one (see class docstring)."""
+        last_error: Exception | None = None
+        for model in models:
+            started = False
+            try:
+                async for frame in self._source.call_stream(model):
+                    started = True
+                    yield frame
+            except (LLMModelNotFoundError, LLMServerError, LLMTimeoutError, TimeoutError) as exc:
+                if started:
+                    raise
+                logger.warning("image stream call_prefer: model=%s failed pre-frame (%s), trying next", model, exc)
+                last_error = exc
+                continue
+            return
+        if last_error is not None:
+            raise last_error
+        msg = "call_prefer requires at least one model."
+        raise ValueError(msg)
+
 
 class TTSRequestBuilder(MediaBuilder[BaseAudioResponse]):
     """Speech builder from ``LLMClient.audio(mode='speech')``; supports ``.call`` and ``.call_stream``."""
