@@ -46,7 +46,8 @@ class RawUsage(BaseModel):
     output_cost: float = 0.0
     model: str = ""
     estimated: bool = False
-    provider: str = ""
+    api_provider: str = ""
+    hosting_provider: str = ""
     region: str = ""
     duration_ms: int = 0
     ttft_ms: int | None = None
@@ -68,7 +69,8 @@ class RawUsage(BaseModel):
             output_cost=round(self.output_cost + other.output_cost, ROUND),
             model=self.model or other.model,
             estimated=self.estimated or other.estimated,
-            provider=self.provider or other.provider,
+            api_provider=self.api_provider or other.api_provider,
+            hosting_provider=self.hosting_provider or other.hosting_provider,
             region=self.region or other.region,
             duration_ms=self.duration_ms + other.duration_ms,
             ttft_ms=self.ttft_ms if self.ttft_ms is not None else other.ttft_ms,
@@ -110,7 +112,8 @@ class StreamChunk(BaseModel):
     input_cost: float | None = None
     output_cost: float | None = None
     tool_calls_delta: list[JsonDict] | None = None
-    provider: str | None = None
+    api_provider: str | None = None
+    hosting_provider: str | None = None
     region: str | None = None
     duration_ms: int | None = None
     ttft_ms: int | None = None

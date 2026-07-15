@@ -98,6 +98,10 @@ class ResolveRequest(BaseModel):
 
     model: str
     zone_selection: ZoneSelection | None = None
+    hosting_providers: list[str] | None = Field(
+        default=None,
+        description="Restrict routing to deployments on these hosting providers (exact slug match); None/[] = no filter.",
+    )
     seed_routing: str | None = Field(
         default=None,
         description="Pre-hashed routing token (as a real call would send); when set, the response pins the exact deployment.",
@@ -196,6 +200,15 @@ class LLMRequest(CallControl):
     target: ModelTarget
     stream: bool = False
     zone_selection: ZoneSelection | None = None
+    hosting_providers: list[str] | None = Field(
+        default=None,
+        description=(
+            "Restrict routing to deployments served by these hosting providers "
+            "(exact slug match, e.g. 'azure', 'aws-bedrock', 'scaleway'; 'azure' does "
+            "not match 'azure-cheap'). None or [] applies no filter. Composes with "
+            "zone_selection (AND)."
+        ),
+    )
     seed_routing: str | None = Field(
         default=None,
         description=(

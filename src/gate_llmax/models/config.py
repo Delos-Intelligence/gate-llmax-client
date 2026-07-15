@@ -74,7 +74,8 @@ class DeploymentInfo(BaseModel):
     id: str
     model_id: str
     name: str
-    provider: str
+    api_provider: str
+    hosting_provider: str = ""
     priority: int
     region: str | None = None
     country: str | None = None
@@ -88,7 +89,8 @@ class ResolvedDeployment(BaseModel):
 
     id: str
     name: str
-    provider: str
+    api_provider: str
+    hosting_provider: str = ""
     region: str | None = None
     country: str | None = None
     priority: int

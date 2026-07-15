@@ -25,7 +25,7 @@ async def _send_ok(self: LLMClient, request: LLMRequest, *, priority: int = 0) -
 
 async def _stream_ok(self: LLMClient, request: LLMRequest, *, priority: int = 0) -> AsyncIterator[StreamChunk]:  # noqa: ARG001
     yield StreamChunk(text="hi")
-    yield StreamChunk(input_tokens=1, output_tokens=2, provider="p")
+    yield StreamChunk(input_tokens=1, output_tokens=2, api_provider="p")
 
 
 def test_disable_usage_skips_billing_but_keeps_it_registered(monkeypatch: Any) -> None:

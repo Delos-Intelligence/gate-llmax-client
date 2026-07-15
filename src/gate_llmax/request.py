@@ -343,6 +343,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
     max_tries: int | None = None
     on_usage: OnUsage | None = None
     zone_selection: ZoneSelection | None = None
+    hosting_providers: list[str] | None = None
     operation: str = ""
     seed_routing: str | None = None
     # When set, every streamed call this builder makes (including each tool-loop turn) sends a
@@ -380,6 +381,15 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         pass ``ZoneSelection()`` to widen back to all deployments.
         """
         self.zone_selection = ZoneSelection.zone(selection) if isinstance(selection, str) else selection
+        return self
+
+    def hosting(self, *providers: str) -> Self:
+        """Restrict this call to deployments on these hosting providers, overriding the client default.
+
+        Slugs match exactly (``"azure"`` does not match ``"azure-cheap"``); calling with no
+        arguments widens back to all hosting providers. Composes with ``.zone(...)`` (AND).
+        """
+        self.hosting_providers = list(providers) if providers else None
         return self
 
     def with_tools(
@@ -540,7 +550,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         final_usage: RawUsage | None = None
         try:
             async for chunk in self.client._stream(request, priority=priority):  # noqa: SLF001
-                if chunk.input_tokens is not None or chunk.output_tokens is not None or chunk.provider is not None:
+                if chunk.input_tokens is not None or chunk.output_tokens is not None or chunk.api_provider is not None:
                     final_usage = RawUsage(
                         input_tokens=chunk.input_tokens or 0,
                         output_tokens=chunk.output_tokens or 0,
@@ -548,7 +558,8 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
                         input_cost=chunk.input_cost or 0.0,
                         output_cost=chunk.output_cost or 0.0,
                         model=model,
-                        provider=chunk.provider or "",
+                        api_provider=chunk.api_provider or "",
+                        hosting_provider=chunk.hosting_provider or "",
                         region=chunk.region or "",
                         duration_ms=chunk.duration_ms or 0,
                         ttft_ms=chunk.ttft_ms,
@@ -674,6 +685,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             timeout=self.timeout,
             batch_timeout=timeout,
             zone_selection=self.zone_selection,
+            hosting_providers=self.hosting_providers,
             operation=self.operation,
             seed_routing=self.seed_routing,
         )
@@ -723,6 +735,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             timeout=self.timeout,
             batch_timeout=timeout,
             zone_selection=self.zone_selection,
+            hosting_providers=self.hosting_providers,
             operation=self.operation,
             seed_routing=self.seed_routing,
         )
@@ -817,6 +830,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             timeout=self.timeout,
             batch_timeout=timeout,
             zone_selection=self.zone_selection,
+            hosting_providers=self.hosting_providers,
             operation=self.operation,
             seed_routing=self.seed_routing,
         )
@@ -1065,6 +1079,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             timeout=self.timeout,
             max_tries=self.max_tries,
             zone_selection=self.zone_selection,
+            hosting_providers=self.hosting_providers,
             operation=self.operation,
             seed_routing=self.seed_routing,
             cache_ttl=self.cache_ttl,

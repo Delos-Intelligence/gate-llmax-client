@@ -73,6 +73,7 @@ class LLMClient:
     _usage_callbacks: list[UsageCallback]
     _budget: BudgetCheck | None
     _default_zone_selection: ZoneSelection | None
+    _default_hosting_providers: list[str] | None
     _seed_routing_token: str | None
     _http: httpx.AsyncClient
     _owns_http: bool
@@ -87,6 +88,7 @@ class LLMClient:
         usage_callback: UsageCallback | None = None,
         budget: BudgetCheck | None = None,
         default_zone_selection: ZoneSelection | None = None,
+        default_hosting_providers: list[str] | None = None,
         seed_routing: object | None = None,
         rate_limit: RateLimit | None = None,
         httpx_aclient: httpx.AsyncClient | None = None,
@@ -114,6 +116,9 @@ class LLMClient:
                 ``LLMBudgetError`` before dispatch. Per-call ``.budget(...)`` overrides it.
             default_zone_selection: Default zone filter for every ``.request(...)`` call
                 (chat routing only); per-call ``.zone(...)`` overrides it.
+            default_hosting_providers: Default hosting-provider allow-list for every
+                ``.request(...)`` call (exact slug match, e.g. ``["azure", "aws-bedrock"]``);
+                per-call ``.hosting(...)`` overrides it. ``None`` applies no filter.
             seed_routing: Default deterministic-routing seed (e.g. ``(org_id, user_id)``) pinning a
                 principal's calls to one deployment; per-call ``seed_routing=`` overrides it.
             rate_limit: Optional client-side throttle (concurrency / requests-per-min / tokens-per-min)
@@ -135,6 +140,7 @@ class LLMClient:
         self._limiter = RateLimiter(rate_limit or RateLimit())
         self._budget = budget
         self._default_zone_selection = default_zone_selection
+        self._default_hosting_providers = default_hosting_providers
         self._seed_routing_token = seed_to_token(seed_routing)
         self._owns_http = httpx_aclient is None
         self._http = httpx_aclient or httpx.AsyncClient(
@@ -251,6 +257,7 @@ class LLMClient:
             max_tries=max_tries,
             on_usage=on_usage,
             zone_selection=self._default_zone_selection,
+            hosting_providers=self._default_hosting_providers,
             operation=operation,
             seed_routing=routing_token,
             cache_ttl=self._resolve_cache_ttl(cache_ttl),
@@ -663,6 +670,7 @@ class LLMClient:
         model: str,
         *,
         zone_selection: ZoneSelection | None = None,
+        hosting_providers: list[str] | None = None,
         seed_routing: object | None = None,
         session_id: str | None = None,
     ) -> ResolveResponse:
@@ -675,6 +683,7 @@ class LLMClient:
         request = ResolveRequest(
             model=model,
             zone_selection=zone_selection if zone_selection is not None else self._default_zone_selection,
+            hosting_providers=hosting_providers if hosting_providers is not None else self._default_hosting_providers,
             seed_routing=seed_to_token(seed_routing) if seed_routing is not None else self._seed_routing_token,
             session_id=session_id,
         )
