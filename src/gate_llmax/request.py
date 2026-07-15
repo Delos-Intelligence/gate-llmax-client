@@ -389,8 +389,10 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
     def hosting(self, *providers: str) -> Self:
         """Restrict this call to deployments on these hosting providers, overriding the client default.
 
-        Slugs match exactly (``"azure"`` does not match ``"azure-cheap"``); calling with no
-        arguments widens back to all hosting providers. Composes with ``.zone(...)`` (AND).
+        A canonical slug also admits its tier variants (``"azure"`` includes ``"azure-cheap"``);
+        a variant admits only itself (``"azure-cheap"`` never widens to plain ``"azure"``).
+        Calling with no arguments widens back to all hosting providers. Composes with
+        ``.zone(...)`` (AND).
         """
         self.hosting_providers = list(providers) if providers else None
         return self

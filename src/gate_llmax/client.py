@@ -117,7 +117,8 @@ class LLMClient:
             default_zone_selection: Default zone filter for every ``.request(...)`` call
                 (chat routing only); per-call ``.zone(...)`` overrides it.
             default_hosting_providers: Default hosting-provider allow-list for every
-                ``.request(...)`` call (exact slug match, e.g. ``["azure", "aws-bedrock"]``);
+                ``.request(...)`` call (slugs, e.g. ``["azure", "aws-bedrock"]``; a canonical
+                slug also admits its tier variants — ``azure`` includes ``azure-cheap``);
                 per-call ``.hosting(...)`` overrides it. ``None`` applies no filter.
             seed_routing: Default deterministic-routing seed (e.g. ``(org_id, user_id)``) pinning a
                 principal's calls to one deployment; per-call ``seed_routing=`` overrides it.

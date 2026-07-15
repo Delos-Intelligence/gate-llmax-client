@@ -100,7 +100,11 @@ class ResolveRequest(BaseModel):
     zone_selection: ZoneSelection | None = None
     hosting_providers: list[str] | None = Field(
         default=None,
-        description="Restrict routing to deployments on these hosting providers (exact slug match); None/[] = no filter.",
+        description=(
+            "Restrict routing to deployments on these hosting providers; a canonical slug also "
+            "admits its tier variants (e.g. 'azure' includes 'azure-cheap', never the reverse). "
+            "None/[] = no filter."
+        ),
     )
     seed_routing: str | None = Field(
         default=None,
@@ -204,9 +208,10 @@ class LLMRequest(CallControl):
         default=None,
         description=(
             "Restrict routing to deployments served by these hosting providers "
-            "(exact slug match, e.g. 'azure', 'aws-bedrock', 'scaleway'; 'azure' does "
-            "not match 'azure-cheap'). None or [] applies no filter. Composes with "
-            "zone_selection (AND)."
+            "(slugs, e.g. 'azure', 'aws-bedrock', 'scaleway'). A canonical slug also "
+            "admits its tier variants ('azure' includes 'azure-cheap'); a variant slug "
+            "admits only itself ('azure-cheap' never widens to plain 'azure'). None or "
+            "[] applies no filter. Composes with zone_selection (AND)."
         ),
     )
     seed_routing: str | None = Field(
