@@ -59,6 +59,12 @@ class RawUsage(BaseModel):
         """Total cost of the call."""
         return round(self.input_cost + self.output_cost, ROUND)
 
+    @computed_field
+    @property
+    def provider(self) -> str:
+        """Deprecated alias of ``api_provider`` — kept on the wire for pre-v0.3 clients."""
+        return self.api_provider
+
     def __add__(self, other: RawUsage) -> RawUsage:
         """Combine two usage objects."""
         return RawUsage(
@@ -117,6 +123,12 @@ class StreamChunk(BaseModel):
     region: str | None = None
     duration_ms: int | None = None
     ttft_ms: int | None = None
+
+    @computed_field
+    @property
+    def provider(self) -> str | None:
+        """Deprecated alias of ``api_provider`` — kept on the wire for pre-v0.3 clients."""
+        return self.api_provider
 
     @property
     def choices(self) -> list[StreamChunkChoice]:

@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 class DeploymentStatus(StrEnum):
@@ -83,6 +83,12 @@ class DeploymentInfo(BaseModel):
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
+    @computed_field
+    @property
+    def provider(self) -> str:
+        """Deprecated alias of ``api_provider`` — kept on the wire for pre-v0.3 clients."""
+        return self.api_provider
+
 
 class ResolvedDeployment(BaseModel):
     """One candidate deployment a model would route to (as seen by ``/v1/resolve``)."""
@@ -95,6 +101,12 @@ class ResolvedDeployment(BaseModel):
     country: str | None = None
     priority: int
     selected: bool = Field(default=False, description="True if the call would hit this deployment (only set when a pin key is given).")
+
+    @computed_field
+    @property
+    def provider(self) -> str:
+        """Deprecated alias of ``api_provider`` — kept on the wire for pre-v0.3 clients."""
+        return self.api_provider
 
 
 class ResolveResponse(BaseModel):
