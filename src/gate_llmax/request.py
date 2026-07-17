@@ -354,6 +354,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
     # order per inference — one request, server-side — preferring prefer_models[0]. Set via
     # RequestBuilder.stream(...).call_prefer(...); propagated by model_copy.
     prefer_models: list[str] | None = None
+    cache_call: bool | None = None
     cache_ttl: int | None = None
     cast_json_enabled: bool = False
     loose_edges: bool = True
@@ -368,12 +369,19 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
     tool_concurrent: bool = True
     tool_max_tokens_before_use: int | None = None
 
-    def cache(self, ttl: int | None) -> Self:
-        """Set this call's cache TTL in seconds, overriding the client default.
+    def cache(self, ttl: int | None = None, *, call: bool | None = True) -> Self:
+        """Turn the gateway response cache on for this call, overriding the client default.
 
-        ``None`` inherits the default, ``0`` forces off, positive caches a SUCCESS that long.
-        Only non-streaming paths are cached server-side.
+        ``call`` decides whether to cache: ``True`` (the default) forces it on, ``False`` off,
+        ``None`` defers to the API key's ``response_caching``. ``ttl`` only sets the lifetime of a
+        cached SUCCESS — ``None`` uses the gateway default. Streaming calls cache too, replaying
+        their recorded chunks.
         """
+        if ttl is not None and ttl <= 0:
+            # cache(0) used to force caching off; under cache_call it would silently mean
+            # "on, at the gateway default lifetime". Reject it rather than invert its meaning.
+            raise ValueError("cache(ttl=) must be positive; pass cache(call=False) to force caching off.")
+        self.cache_call = call
         self.cache_ttl = ttl
         return self
 
@@ -1096,6 +1104,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             hosting_providers=self.hosting_providers,
             operation=self.operation,
             seed_routing=self.seed_routing,
+            cache_call=self.cache_call,
             cache_ttl=self.cache_ttl,
             smooth=smooth_server_side,
             smooth_duration_ms=smooth_duration_ms,
