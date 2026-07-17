@@ -13,18 +13,25 @@ from .messages import Message
 class CallControl(BaseModel):
     """Shared per-call retry/timeout overrides for chat, embed, and audio requests.
 
-    Both fields fall back to the resolved model's defaults
+    ``max_tries`` / ``timeout`` fall back to the resolved model's defaults
     (``LLMModel.max_tries`` / ``LLMModel.timeout``) when left as ``None``.
     """
 
     max_tries: int | None = Field(default=None, description="Per-call upstream attempts, including the first.")
     timeout: int | None = Field(default=None, description="Per-call upstream timeout in seconds.")
     operation: str = Field(default="", description="Caller-supplied usage tag; echoed onto RawUsage and the usage log row.")
+    cache_call: bool | None = Field(
+        default=None,
+        description=(
+            "Whether to serve this call from the gateway response cache. ``None`` defers to the "
+            "API key's ``response_caching`` default; True/False force it on/off for this call."
+        ),
+    )
     cache_ttl: int | None = Field(
         default=None,
         description=(
-            "Response-cache lifetime in seconds. ``None`` or a non-positive value disables caching "
-            "for this call; a positive value replays a stored successful response for that many seconds."
+            "Response-cache lifetime in seconds when caching is active. ``None`` uses the gateway "
+            "default (600s). Has no effect on its own — caching is enabled by ``cache_call``."
         ),
     )
 

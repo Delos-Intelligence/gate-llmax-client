@@ -313,46 +313,52 @@ async def test_tts_then_stt_roundtrip(client: LLMClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Response caching (per-call cache_ttl)
+# Response caching (per-call cache_call)
 # ---------------------------------------------------------------------------
 
 
 async def test_cache_roundtrip(client: LLMClient) -> None:
-    """A second identical call with cache_ttl replays the first; without it, nothing is cached.
+    """A second identical call with cache_call=True replays the first; False forces off.
 
     Skips when the gateway has no cache configured (no REDIS_URL).
     """
     prompt = f"Reply with the single word KIWI. token={uuid.uuid4()}"
-    first = await client.request(operation="test_chat", prompt=prompt, cache_ttl=120).call(CHAT_MODEL)
-    second = await client.request(operation="test_chat", prompt=prompt, cache_ttl=120).call(CHAT_MODEL)
+    first = await client.request(operation="test_chat", prompt=prompt, cache_call=True).call(CHAT_MODEL)
+    second = await client.request(operation="test_chat", prompt=prompt, cache_call=True).call(CHAT_MODEL)
     if not second.cached:
         pytest.skip("gateway response cache not enabled (no REDIS_URL)")
     assert first.cached is False
     assert second.raw_text == first.raw_text
 
-    plain_prompt = f"Reply with the single word KIWI. token={uuid.uuid4()}"
-    a = await client.request(operation="test_chat", prompt=plain_prompt).call(CHAT_MODEL)
-    b = await client.request(operation="test_chat", prompt=plain_prompt).call(CHAT_MODEL)
+    # cache_call=False forces caching off whatever the key's response_caching default is.
+    off_prompt = f"Reply with the single word KIWI. token={uuid.uuid4()}"
+    a = await client.request(operation="test_chat", prompt=off_prompt, cache_call=False).call(CHAT_MODEL)
+    b = await client.request(operation="test_chat", prompt=off_prompt, cache_call=False).call(CHAT_MODEL)
     assert a.cached is False
     assert b.cached is False
 
 
 async def test_cache_client_default() -> None:
-    """A client-level default cache_ttl caches by default; a per-call 0 forces it off."""
-    cached_client = LLMClient(api_key=API_KEY, base_url=BASE_URL, cache_ttl=120)
+    """A client-level cache_call=True caches by default; a per-call False forces it off."""
+    cached_client = LLMClient(api_key=API_KEY, base_url=BASE_URL, cache_call=True)
     try:
         prompt = f"Reply with the single word PEAR. token={uuid.uuid4()}"
         await cached_client.request(operation="test_chat", prompt=prompt).call(CHAT_MODEL)
         second = await cached_client.request(operation="test_chat", prompt=prompt).call(CHAT_MODEL)
         if not second.cached:
             pytest.skip("gateway response cache not enabled (no REDIS_URL)")
-        # Per-call cache_ttl=0 forces caching off even though the client default is on.
         off_prompt = f"Reply with the single word PEAR. token={uuid.uuid4()}"
-        await cached_client.request(operation="test_chat", prompt=off_prompt, cache_ttl=0).call(CHAT_MODEL)
-        again = await cached_client.request(operation="test_chat", prompt=off_prompt, cache_ttl=0).call(CHAT_MODEL)
+        await cached_client.request(operation="test_chat", prompt=off_prompt, cache_call=False).call(CHAT_MODEL)
+        again = await cached_client.request(operation="test_chat", prompt=off_prompt, cache_call=False).call(CHAT_MODEL)
         assert again.cached is False
     finally:
         await cached_client.close()
+
+
+def test_cache_builder_rejects_non_positive_ttl(client: LLMClient) -> None:
+    """cache(0) meant "force off" under cache_ttl; it must not silently flip to "on"."""
+    with pytest.raises(ValueError, match="must be positive"):
+        client.request(operation="test_chat", prompt="x").cache(0)
 
 
 # ---------------------------------------------------------------------------

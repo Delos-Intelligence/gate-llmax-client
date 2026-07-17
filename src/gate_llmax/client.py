@@ -68,6 +68,7 @@ class LLMClient:
     _api_key: str
     _base_url: str
     _timeout: float
+    _cache_call: bool | None
     _cache_ttl: int | None
     _default_temperature: float | None
     _usage_callbacks: list[UsageCallback]
@@ -83,6 +84,7 @@ class LLMClient:
         api_key: str,
         base_url: str,
         timeout: float = _DEFAULT_TIMEOUT,
+        cache_call: bool | None = None,
         cache_ttl: int | None = None,
         temperature: float | None = None,
         usage_callback: UsageCallback | None = None,
@@ -99,10 +101,13 @@ class LLMClient:
             api_key: Gate API key sent as ``X-Gate-Key`` on every request.
             base_url: Base URL of the Gate gateway (trailing slash stripped).
             timeout: Default request timeout in seconds.
-            cache_ttl: Default response-cache lifetime in seconds applied to every call.
-                ``None`` (the default) disables caching; a positive value caches successful
-                responses for that many seconds. Per-call arguments override this default —
-                pass ``0`` on a call to force caching off when the client default is on.
+            cache_call: Default response-cache switch applied to every call. ``None`` (the
+                default) defers to the API key's server-side ``response_caching`` default;
+                ``True`` / ``False`` force caching on / off. Per-call arguments override it.
+            cache_ttl: Default response-cache lifetime in seconds applied to every call when
+                caching is active. ``None`` (the default) uses the gateway default (600s).
+                Sets the lifetime only — caching is enabled by ``cache_call``. Per-call
+                arguments override this default.
             temperature: Default sampling temperature seeded onto every ``.request(...)`` /
                 ``.simple_request(...)`` call whose ``specifics`` does not set one. ``None`` (the
                 default) leaves the provider default in place; bind e.g. ``0.0`` here once for
@@ -133,6 +138,7 @@ class LLMClient:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
+        self._cache_call = cache_call
         self._cache_ttl = cache_ttl
         self._default_temperature = temperature
         self._usage_callbacks = [usage_callback] if usage_callback is not None else []
@@ -188,8 +194,12 @@ class LLMClient:
         """Add one call's cost to ``total_usage`` — invoked by every builder's usage fire."""
         self._total_usage += usage.total_cost
 
+    def _resolve_cache_call(self, override: bool | None) -> bool | None:
+        """Per-call ``cache_call`` wins when provided; else the client default (``None`` = the key's)."""
+        return self._cache_call if override is None else override
+
     def _resolve_cache_ttl(self, override: int | None) -> int | None:
-        """Per-call ``cache_ttl`` wins when provided (``0`` forces off); else the client default."""
+        """Per-call ``cache_ttl`` wins when provided; else the client default (``None`` = the gateway's)."""
         return self._cache_ttl if override is None else override
 
     def request(
@@ -206,6 +216,7 @@ class LLMClient:
         *,
         operation: str,
         seed_routing: object | None = None,
+        cache_call: bool | None = None,
         cache_ttl: int | None = None,
     ) -> RequestBuilder[LLMResponse]:
         """Build a request builder with the given parameters.
@@ -229,9 +240,12 @@ class LLMClient:
                 deterministic deployment pinning. Hashed client-side to an opaque
                 token, so the raw value never reaches the gateway. Overrides the
                 client-level ``seed_routing`` default when provided.
-            cache_ttl: Per-call response-cache lifetime in seconds; overrides the client
-                default. ``None`` inherits the client default, ``0`` forces caching off,
-                a positive value caches the successful response for that many seconds.
+            cache_call: Whether to serve this call from the gateway response cache;
+                overrides the client default. ``None`` inherits it (and, with no client
+                default, defers to the API key's server-side ``response_caching``).
+            cache_ttl: Per-call response-cache lifetime in seconds when caching is active;
+                overrides the client default. ``None`` inherits it; caching itself is
+                enabled by ``cache_call``.
         """
         routing_token = seed_to_token(seed_routing) if seed_routing is not None else self._seed_routing_token
         if prompt is not None and messages is not None:
@@ -261,6 +275,7 @@ class LLMClient:
             hosting_providers=self._default_hosting_providers,
             operation=operation,
             seed_routing=routing_token,
+            cache_call=self._resolve_cache_call(cache_call),
             cache_ttl=self._resolve_cache_ttl(cache_ttl),
             usage_callbacks=list(self._usage_callbacks),
             budget_check=self._budget,
@@ -332,15 +347,22 @@ class LLMClient:
         operation: str,
         max_tries: int | None = None,
         timeout: int | None = None,
+        cache_call: bool | None = None,
         cache_ttl: int | None = None,
     ) -> DirectRequestBuilder[EmbedResponse]:
         """Fluent builder for embeddings; ``.call(model)`` sends it.
 
         ``input`` is one or more strings to embed. ``operation`` tags the usage row.
-        ``cache_ttl`` / ``max_tries`` / ``timeout`` default to the client's.
+        ``cache_call`` / ``cache_ttl`` / ``max_tries`` / ``timeout`` default to the client's.
         """
         request = EmbedRequest(
-            model="", input=input, operation=operation, max_tries=max_tries, timeout=timeout, cache_ttl=self._resolve_cache_ttl(cache_ttl)
+            model="",
+            input=input,
+            operation=operation,
+            max_tries=max_tries,
+            timeout=timeout,
+            cache_call=self._resolve_cache_call(cache_call),
+            cache_ttl=self._resolve_cache_ttl(cache_ttl),
         )
         return self._direct_builder(request, "/v1/embeddings", "Embedding", EmbedResponse)
 
@@ -355,6 +377,7 @@ class LLMClient:
         temperature: float | None = None,
         max_tries: int | None = None,
         timeout: int | None = None,
+        cache_call: bool | None = None,
         cache_ttl: int | None = None,
     ) -> DirectRequestBuilder[AudioResponse]:
         """Fluent builder for audio transcription; ``.call(model)`` sends it.
@@ -373,6 +396,7 @@ class LLMClient:
             temperature=temperature,
             max_tries=max_tries,
             timeout=timeout,
+            cache_call=self._resolve_cache_call(cache_call),
             cache_ttl=self._resolve_cache_ttl(cache_ttl),
         )
         return self._direct_builder(request, "/v1/audio/transcriptions", "Audio transcription", AudioResponse)
@@ -439,6 +463,7 @@ class LLMClient:
         max_tries: int | None = ...,
         timeout: int | None = ...,
         operation: str,
+        cache_call: bool | None = ...,
         cache_ttl: int | None = ...,
     ) -> TTSRequestBuilder: ...
 
@@ -458,6 +483,7 @@ class LLMClient:
         max_tries: int | None = ...,
         timeout: int | None = ...,
         operation: str,
+        cache_call: bool | None = ...,
         cache_ttl: int | None = ...,
     ) -> AudioGenRequestBuilder: ...
 
@@ -480,6 +506,7 @@ class LLMClient:
         max_tries: int | None = None,
         timeout: int | None = None,
         operation: str,
+        cache_call: bool | None = None,
         cache_ttl: int | None = None,
     ) -> TTSRequestBuilder | AudioGenRequestBuilder:
         """Fluent builder for audio; ``.call(model)`` sends it. ``mode`` picks speech vs generative.
@@ -488,6 +515,7 @@ class LLMClient:
         ``.call_stream``). ``music`` / ``sound_effects`` → ``prompt`` (+ length / duration knobs).
         ``dialogue`` → ``inputs`` speaker turns.
         """
+        use_cache = self._resolve_cache_call(cache_call)
         ttl = self._resolve_cache_ttl(cache_ttl)
         if mode == "speech":
             request: TTSRequest | AudioGenRequest = TTSRequest(
@@ -499,6 +527,7 @@ class LLMClient:
                 max_tries=max_tries,
                 timeout=timeout,
                 operation=operation,
+                cache_call=use_cache,
                 cache_ttl=ttl,
             )
             return TTSRequestBuilder(client=self, request=request, usage_callbacks=list(self._usage_callbacks), budget_check=self._budget)
@@ -516,6 +545,7 @@ class LLMClient:
             max_tries=max_tries,
             timeout=timeout,
             operation=operation,
+            cache_call=use_cache,
             cache_ttl=ttl,
         )
         return AudioGenRequestBuilder(client=self, request=request, usage_callbacks=list(self._usage_callbacks), budget_check=self._budget)
@@ -534,6 +564,7 @@ class LLMClient:
         max_tries: int | None = None,
         timeout: int | None = None,
         operation: str,
+        cache_call: bool | None = None,
         cache_ttl: int | None = None,
     ) -> VideoRequestBuilder:
         """Fluent builder for text/image-to-video; ``.call(model)`` sends it.
@@ -550,7 +581,10 @@ class LLMClient:
             max_tries: Per-call upstream attempts; overrides the model default.
             timeout: Per-call upstream timeout in seconds; overrides the model default.
             operation: Caller-supplied usage tag, echoed onto the usage log row.
-            cache_ttl: Response-cache lifetime in seconds; overrides the client default.
+            cache_call: Whether to use the gateway response cache; overrides the client
+                default. ``None`` defers to the API key's server-side default.
+            cache_ttl: Response-cache lifetime in seconds when caching is active; overrides
+                the client default. Caching itself is enabled by ``cache_call``.
         """
         request = VideoRequest(
             model="",
@@ -565,6 +599,7 @@ class LLMClient:
             max_tries=max_tries,
             timeout=timeout,
             operation=operation,
+            cache_call=self._resolve_cache_call(cache_call),
             cache_ttl=self._resolve_cache_ttl(cache_ttl),
         )
         return VideoRequestBuilder(client=self, request=request, usage_callbacks=list(self._usage_callbacks), budget_check=self._budget)
@@ -624,13 +659,14 @@ class LLMClient:
         max_tries: int | None = None,
         timeout: int | None = None,
         operation: str,
+        cache_call: bool | None = None,
         cache_ttl: int | None = None,
     ) -> ImageRequestBuilder:
         """Fluent builder for image generation / edit; ``.call(model)`` sends it.
 
         Pass input images as raw bytes (``images``) and/or already-encoded base64
-        (``b64_images``); supplying either switches the call to edit mode. ``cache_ttl`` /
-        ``max_tries`` / ``timeout`` default to the client's; ``operation`` tags the usage row;
+        (``b64_images``); supplying either switches the call to edit mode. ``cache_call`` /
+        ``cache_ttl`` / ``max_tries`` / ``timeout`` default to the client's; ``operation`` tags the usage row;
         the rest mirror ``ImageRequest``.
         """
         encoded = [base64.b64encode(b).decode() for b in images or []] + list(b64_images or [])
@@ -650,6 +686,7 @@ class LLMClient:
             max_tries=max_tries,
             timeout=timeout,
             operation=operation,
+            cache_call=self._resolve_cache_call(cache_call),
             cache_ttl=self._resolve_cache_ttl(cache_ttl),
         )
         return ImageRequestBuilder(client=self, request=request, usage_callbacks=list(self._usage_callbacks), budget_check=self._budget)
