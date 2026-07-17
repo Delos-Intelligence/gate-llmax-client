@@ -62,20 +62,6 @@ _DEFAULT_TIMEOUT = 120.0
 MEDIA_CLIENT_TIMEOUT = 630.0  # dubbing/video are long-running; outlast the server-side wait
 
 
-def _union_providers(base: list[str] | None, extra: list[str] | None) -> list[str] | None:
-    """Widen a hosting-provider allow-list ``base`` by ``extra`` (order-preserving, de-duped).
-
-    ``base`` alone restricts; ``extra`` only ever adds. With no ``extra`` the base is returned
-    unchanged (so ``None`` stays ``None`` = no filter); ``extra`` with an empty base yields just
-    the extras.
-    """
-    if not extra:
-        return base
-    merged = list(base or [])
-    merged += [p for p in extra if p not in merged]
-    return merged
-
-
 class LLMClient:
     """HTTP client for the Gate gateway; use `.request(...).call(model)` and variants."""
 
@@ -105,7 +91,6 @@ class LLMClient:
         budget: BudgetCheck | None = None,
         default_zone_selection: ZoneSelection | None = None,
         default_hosting_providers: list[str] | None = None,
-        extra_hosting_providers: list[str] | None = None,
         seed_routing: object | None = None,
         rate_limit: RateLimit | None = None,
         httpx_aclient: httpx.AsyncClient | None = None,
@@ -140,10 +125,6 @@ class LLMClient:
                 ``.request(...)`` call (slugs, e.g. ``["azure", "aws-bedrock"]``; a canonical
                 slug also admits its tier variants — ``azure`` includes ``azure-cheap``);
                 per-call ``.hosting(...)`` overrides it. ``None`` applies no filter.
-            extra_hosting_providers: Providers unioned on top of ``default_hosting_providers``
-                to *widen* the allow-list (rather than override it). Use this for additive
-                grants — e.g. an org allowed to route to a provider beyond its plan — where the
-                effective allow-list must stay ``plan + extras``. ``None`` / empty adds nothing.
             seed_routing: Default deterministic-routing seed (e.g. ``(org_id, user_id)``) pinning a
                 principal's calls to one deployment; per-call ``seed_routing=`` overrides it.
             rate_limit: Optional client-side throttle (concurrency / requests-per-min / tokens-per-min)
@@ -166,7 +147,7 @@ class LLMClient:
         self._limiter = RateLimiter(rate_limit or RateLimit())
         self._budget = budget
         self._default_zone_selection = default_zone_selection
-        self._default_hosting_providers = _union_providers(default_hosting_providers, extra_hosting_providers)
+        self._default_hosting_providers = default_hosting_providers
         self._seed_routing_token = seed_to_token(seed_routing)
         self._owns_http = httpx_aclient is None
         self._http = httpx_aclient or httpx.AsyncClient(
