@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from gate_llmax.models.audio import AudioRequest, AudioResponse
 from gate_llmax.models.audio_gen import AudioGenMode, AudioGenRequest, AudioGenResponse, AudioMode, DialogueTurn
 from gate_llmax.models.audio_isolation import AudioIsolationRequest, AudioIsolationResponse
-from gate_llmax.models.config import ExtraAttributeName, ModelInfo, ResolveResponse
+from gate_llmax.models.config import ExtraAttributeName, ModelInfo, ModelPlanRow, PlanInfo, ResolveResponse
 from gate_llmax.models.dubbing import DubbingRequest, DubbingResponse
 from gate_llmax.models.embed import EmbedRequest, EmbedResponse
 from gate_llmax.models.images import AspectRatio, ImageData, ImageQuality, ImageRequest, ImageResponse, ImageSize
@@ -709,6 +709,22 @@ class LLMClient:
         response = await self._http.get("/v1/extra-attributes")
         _raise_for_status(response)
         return [ExtraAttributeName.model_validate(item) for item in response.json()]
+
+    async def list_plans(self) -> list[PlanInfo]:
+        """GET /v1/plans — the hosting plans (cost/infra tiers). Requires a ``dev`` API key (403 otherwise)."""
+        response = await self._http.get("/v1/plans")
+        _raise_for_status(response)
+        return [PlanInfo.model_validate(item) for item in response.json()]
+
+    async def model_plan_matrix(self) -> list[ModelPlanRow]:
+        """GET /v1/model-plan-matrix — every model and the plans it is reachable on.
+
+        Requires a ``dev`` API key (403 otherwise). Use it to build a ``call_prefer([...])``
+        list covering every plan an app serves (see the ``gate-llmax agent`` MCP ``prefer_list`` tool).
+        """
+        response = await self._http.get("/v1/model-plan-matrix")
+        _raise_for_status(response)
+        return [ModelPlanRow.model_validate(item) for item in response.json()]
 
     async def resolve(
         self,

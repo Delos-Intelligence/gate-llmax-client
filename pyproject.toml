@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gate-llmax"
-version = "0.3.4"
+version = "0.3.5"
 description = "Gate LLM Gateway – Python client SDK and shared types"
 readme = "README.md"
 license = "MIT"
@@ -27,6 +27,13 @@ dependencies = [
     "tiktoken>=0.7",
 ]
 
+[project.optional-dependencies]
+# `agent` powers `gate-llmax agent mcp` (the Gate MCP server). The core client SDK needs none of it.
+agent = ["mcp>=1.2"]
+
+[project.scripts]
+gate-llmax = "gate_llmax.agent.cli:main"
+
 [project.urls]
 Repository = "https://github.com/Delos-Intelligence/gate-llmax-client"
 
@@ -44,6 +51,8 @@ dev = [
 # Pydantic models / type aliases the Gate backend imports too.
 [tool.hatch.build.targets.wheel]
 packages = ["src/gate_llmax"]
+# The packaged agent skill (Markdown) ships in the wheel so `gate-llmax agent install` can write it.
+force-include = { "src/gate_llmax/agent/skill/SKILL.md" = "gate_llmax/agent/skill/SKILL.md" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -93,3 +102,5 @@ convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ANN401", "D103", "D101", "SLF001"]
+# The CLI's stdout is its user interface — `print` is intended output, not a stray debug line.
+"src/gate_llmax/agent/cli.py" = ["T201"]

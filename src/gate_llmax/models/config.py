@@ -58,6 +58,29 @@ class ModelInfo(BaseModel):
     updated_at: datetime | None = None
 
 
+class PlanInfo(BaseModel):
+    """A hosting plan: a named preset of hosting providers (a cost/infra tier, e.g. ``omicron``)."""
+
+    id: str
+    name: str
+    description: str | None = None
+    sort_order: int = 0
+
+
+class ModelPlanRow(BaseModel):
+    """One model and the plans it is reachable on (has a deployment on an admitted host).
+
+    ``available_plan_ids`` lists the plans a chat/… call to ``model_name`` can succeed under
+    (``plan=`` filters routing to that plan's hosting providers). Empty ⇒ reachable on no plan.
+    """
+
+    model_id: str
+    model_name: str
+    purpose: ModelPurpose = ModelPurpose.CHAT
+    developer_id: str | None = None
+    available_plan_ids: list[str] = Field(default_factory=list)
+
+
 class ExtraAttributeName(BaseModel):
     """A registered extra-attribute name (controlled vocabulary for model `extra_attributes`)."""
 
