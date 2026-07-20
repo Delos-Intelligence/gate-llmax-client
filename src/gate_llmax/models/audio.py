@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from ..models.request import CallControl
 from ..models.response import LLMCallRecord
@@ -19,7 +19,19 @@ class AudioRequest(CallControl):
     temperature: float | None = Field(default=None, description="Sampling temperature for transcription (0-1).")
 
 
+class TranscriptionSegment(BaseModel):
+    """One timestamped transcript segment (from ``verbose_json`` STT)."""
+
+    start: float = Field(default=0.0, description="Segment start time in seconds.")
+    end: float = Field(default=0.0, description="Segment end time in seconds.")
+    text: str = Field(default="", description="Transcript text for this segment.")
+
+
 class AudioResponse(LLMCallRecord):
     """Response from ``/v1/audio/transcriptions`` — Gate call metadata + transcript text."""
 
     text: str = ""
+    segments: list[TranscriptionSegment] = Field(
+        default_factory=list,
+        description="Timestamped segments; populated only for ``verbose_json`` on whisper models, empty otherwise.",
+    )

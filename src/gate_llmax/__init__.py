@@ -2,7 +2,7 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
-from gate_llmax.models.audio import AudioRequest, AudioResponse
+from gate_llmax.models.audio import AudioRequest, AudioResponse, TranscriptionSegment
 from gate_llmax.models.audio_gen import AudioGenMode, AudioGenRequest, AudioGenResponse, AudioMode, DialogueTurn
 from gate_llmax.models.audio_isolation import AudioIsolationRequest, AudioIsolationResponse
 from gate_llmax.models.config import (
@@ -165,6 +165,7 @@ __all__ = [
     "ToolProgress",
     "ToolResult",
     "ToolStreamItem",
+    "TranscriptionSegment",
     "TypedLLMResponse",
     "UsageCallback",
     "VideoCallback",
