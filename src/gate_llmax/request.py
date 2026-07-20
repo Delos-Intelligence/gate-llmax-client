@@ -347,6 +347,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
     on_usage: OnUsage | None = None
     zone_selection: ZoneSelection | None = None
     hosting_providers: list[str] | None = None
+    plan: str | None = None
     operation: str = ""
     seed_routing: str | None = None
     # When set, every streamed call this builder makes (including each tool-loop turn) sends a
@@ -708,6 +709,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             batch_timeout=timeout,
             zone_selection=self.zone_selection,
             hosting_providers=self.hosting_providers,
+            plan=self.plan,
             operation=self.operation,
             seed_routing=self.seed_routing,
         )
@@ -758,6 +760,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             batch_timeout=timeout,
             zone_selection=self.zone_selection,
             hosting_providers=self.hosting_providers,
+            plan=self.plan,
             operation=self.operation,
             seed_routing=self.seed_routing,
         )
@@ -853,6 +856,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             batch_timeout=timeout,
             zone_selection=self.zone_selection,
             hosting_providers=self.hosting_providers,
+            plan=self.plan,
             operation=self.operation,
             seed_routing=self.seed_routing,
         )
@@ -1102,6 +1106,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             max_tries=self.max_tries,
             zone_selection=self.zone_selection,
             hosting_providers=self.hosting_providers,
+            plan=self.plan,
             operation=self.operation,
             seed_routing=self.seed_routing,
             cache_call=self.cache_call,

@@ -75,6 +75,7 @@ class LLMClient:
     _budget: BudgetCheck | None
     _default_zone_selection: ZoneSelection | None
     _default_hosting_providers: list[str] | None
+    _default_plan: str | None
     _seed_routing_token: str | None
     _http: httpx.AsyncClient
     _owns_http: bool
@@ -91,6 +92,7 @@ class LLMClient:
         budget: BudgetCheck | None = None,
         default_zone_selection: ZoneSelection | None = None,
         default_hosting_providers: list[str] | None = None,
+        default_plan: str | None = None,
         seed_routing: object | None = None,
         rate_limit: RateLimit | None = None,
         httpx_aclient: httpx.AsyncClient | None = None,
@@ -125,6 +127,9 @@ class LLMClient:
                 ``.request(...)`` call (slugs, e.g. ``["azure", "aws-bedrock"]``; a canonical
                 slug also admits its tier variants — ``azure`` includes ``azure-cheap``);
                 per-call ``.hosting(...)`` overrides it. ``None`` applies no filter.
+            default_plan: Default plan — a named hosting-provider preset (e.g. ``"omicron"``) —
+                applied to every ``.request(...)`` call; resolves to the plan's hosting providers
+                server-side, and an explicit ``.hosting(...)`` wins. ``None`` = no plan.
             seed_routing: Default deterministic-routing seed (e.g. ``(org_id, user_id)``) pinning a
                 principal's calls to one deployment; per-call ``seed_routing=`` overrides it.
             rate_limit: Optional client-side throttle (concurrency / requests-per-min / tokens-per-min)
@@ -148,6 +153,7 @@ class LLMClient:
         self._budget = budget
         self._default_zone_selection = default_zone_selection
         self._default_hosting_providers = default_hosting_providers
+        self._default_plan = default_plan
         self._seed_routing_token = seed_to_token(seed_routing)
         self._owns_http = httpx_aclient is None
         self._http = httpx_aclient or httpx.AsyncClient(
@@ -273,6 +279,7 @@ class LLMClient:
             on_usage=on_usage,
             zone_selection=self._default_zone_selection,
             hosting_providers=self._default_hosting_providers,
+            plan=self._default_plan,
             operation=operation,
             seed_routing=routing_token,
             cache_call=self._resolve_cache_call(cache_call),
@@ -709,6 +716,7 @@ class LLMClient:
         *,
         zone_selection: ZoneSelection | None = None,
         hosting_providers: list[str] | None = None,
+        plan: str | None = None,
         seed_routing: object | None = None,
         session_id: str | None = None,
     ) -> ResolveResponse:
@@ -722,6 +730,7 @@ class LLMClient:
             model=model,
             zone_selection=zone_selection if zone_selection is not None else self._default_zone_selection,
             hosting_providers=hosting_providers if hosting_providers is not None else self._default_hosting_providers,
+            plan=plan if plan is not None else self._default_plan,
             seed_routing=seed_to_token(seed_routing) if seed_routing is not None else self._seed_routing_token,
             session_id=session_id,
         )

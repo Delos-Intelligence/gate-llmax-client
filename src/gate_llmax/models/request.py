@@ -113,6 +113,13 @@ class ResolveRequest(BaseModel):
             "None/[] = no filter."
         ),
     )
+    plan: str | None = Field(
+        default=None,
+        description=(
+            "Named preset of hosting providers (a cost/infra tier, e.g. 'omicron'). Equivalent to "
+            "setting hosting_providers to the plan's set; an explicit hosting_providers wins. None = no plan."
+        ),
+    )
     seed_routing: str | None = Field(
         default=None,
         description="Pre-hashed routing token (as a real call would send); when set, the response pins the exact deployment.",
@@ -219,6 +226,14 @@ class LLMRequest(CallControl):
             "admits its tier variants ('azure' includes 'azure-cheap'); a variant slug "
             "admits only itself ('azure-cheap' never widens to plain 'azure'). None or "
             "[] applies no filter. Composes with zone_selection (AND)."
+        ),
+    )
+    plan: str | None = Field(
+        default=None,
+        description=(
+            "Named preset of hosting providers (a cost/infra tier, e.g. 'omicron'). Resolves to the "
+            "plan's hosting_providers set server-side; an explicit hosting_providers takes precedence. "
+            "None = no plan."
         ),
     )
     seed_routing: str | None = Field(
