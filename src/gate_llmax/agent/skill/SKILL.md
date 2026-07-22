@@ -87,6 +87,32 @@ Typical flow: call `prefer_list` with the app's `purpose` (and `prefer` models i
 
 The plan tools need a **dev** API key (a key with the `dev` flag). `list_models` / `resolve` work with any key.
 
+## Checking a model actually works: heavy_test
+
+Before putting a new model in front of users, hammer it with every request shape it can serve —
+the `gate-llmax` MCP exposes this as **`heavy_test`**:
+
+- `heavy_test_cases` — the catalogue (id, intent, tags, required capabilities). Free, no gateway call.
+- `heavy_test(model, n=5, rate=6, only=None, plan=None)` — run the capability-matched suite `n`
+  times at `rate` requests/minute. The suite is picked from the model's registered capabilities, so
+  a multimodal tool-using model is tested on ~22 shapes (text, streaming, multi-turn, tool calls
+  auto/forced/parallel/streamed, vision, vision+tools, image degradation, JSON mode, reasoning,
+  prompt cache, determinism, `n=3`, stop sequences, truncation, long input, unicode) and a
+  text-only model on the subset it can serve. Nothing is asked of a model that it cannot do.
+
+It **spends real money and quota**: `n × len(cases)` requests. Narrow it with `only=["tools"]` (case
+ids or tags) while iterating, then run the full suite once. Launches are paced, not serialized —
+one every `60/rate` seconds — so slow answers overlap like real traffic.
+
+The report gives pass rate and status breakdown, latency + TTFT percentiles, token/cost totals, a
+per-case table, which deployments served the traffic, a determinism check, and every failing run
+with its reason (`tool 'get_weather' never called`, `reply did not parse as JSON`,
+`finish_reason='stop', expected 'length'`, `no answer text — 4490 chars of reasoning`).
+
+On a reasoning-capable model the suite sets `reasoning_effort=minimal` and lifts small token caps
+on the cases that are *not* about reasoning — otherwise the model spends the whole budget thinking
+and every case degrades to "returned nothing", which tests nothing.
+
 ## Gotchas
 
 - `operation=` is mandatory. `prompt=` and `messages=` are mutually exclusive.

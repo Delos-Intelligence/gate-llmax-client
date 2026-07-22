@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gate-llmax"
-version = "0.3.8"
+version = "0.3.9"
 description = "Gate LLM Gateway – Python client SDK and shared types"
 readme = "README.md"
 license = "MIT"

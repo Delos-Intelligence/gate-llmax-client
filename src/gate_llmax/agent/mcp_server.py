@@ -1,10 +1,11 @@
 """Gate MCP server — the minimum an agent needs to use Gate correctly.
 
-Exposes read-only tools over a running Gate gateway: list models, list plans, check whether a
-model is reachable on a plan, and — the important one — build a ``call_prefer([...])`` fallback
-list that covers every plan an app serves.
+Exposes tools over a running Gate gateway: list models, list plans, check whether a model is
+reachable on a plan, build a ``call_prefer([...])`` fallback list that covers every plan an app
+serves, and — the one that spends money — ``heavy_test``, which hammers a chat model with every
+request shape it can serve and reports what broke.
 
-Config comes from the environment:
+Config comes from the environment, falling back to the file ``gate-llmax agent install`` writes:
     GATE_BASE_URL   base URL of the Gate gateway (e.g. https://gate.example.com)
     GATE_API_KEY    a Gate API key. Plan tools need a **dev** key (the `dev` flag); model/resolve
                     tools work with any key.
@@ -15,9 +16,18 @@ Run it with ``gate-llmax agent mcp`` (stdio). Requires the ``agent`` extra: ``pi
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
+from gate_llmax.agent import credentials
+from gate_llmax.agent.heavy_test import (
+    DEFAULT_BUDGET_SECONDS,
+    DEFAULT_MAX_CONCURRENCY,
+    DEFAULT_N,
+    DEFAULT_OPERATION,
+    DEFAULT_RATE_PER_MIN,
+    case_catalogue,
+    run_heavy_test,
+)
 from gate_llmax.agent.prefer import build_prefer_list
 from gate_llmax.client import LLMClient
 from gate_llmax.exceptions import LLMAuthError, LLMError
@@ -36,11 +46,10 @@ _DEV_HINT = "This tool needs a dev API key. Set GATE_API_KEY to a key whose `dev
 
 
 def _config() -> tuple[str, str]:
-    base_url = os.environ.get("GATE_BASE_URL", "").strip()
-    api_key = os.environ.get("GATE_API_KEY", "").strip()
+    base_url, api_key = credentials.resolve()
     if not base_url or not api_key:
         missing = ", ".join(n for n, v in (("GATE_BASE_URL", base_url), ("GATE_API_KEY", api_key)) if not v)
-        raise RuntimeError(f"Missing environment variable(s): {missing}. Set them in the MCP server config.")
+        raise RuntimeError(f"Missing gateway config: {missing}. Run `gate-llmax agent install` to set it.")
     return base_url, api_key
 
 
@@ -198,6 +207,76 @@ async def resolve(model: str, plan: str | None = None) -> dict[str, Any]:
     except LLMError as exc:
         return {"error": _dev_error(exc)}
     return resolved.model_dump(mode="json")
+
+
+@mcp.tool()
+async def heavy_test_cases() -> list[dict[str, Any]]:
+    """List the request shapes ``heavy_test`` can run (id, intent, tags, required capabilities).
+
+    Use it to pick a ``only=[...]`` subset before spending money on a full run. No gateway call.
+    """
+    return case_catalogue()
+
+
+@mcp.tool()
+async def heavy_test(
+    model: str,
+    n: int = DEFAULT_N,
+    rate: float = DEFAULT_RATE_PER_MIN,
+    plan: str | None = None,
+    only: list[str] | None = None,
+    operation: str = DEFAULT_OPERATION,
+    max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
+    budget_seconds: float = DEFAULT_BUDGET_SECONDS,
+    *,
+    include_runs: bool = False,
+) -> dict[str, Any]:
+    """Hammer one chat model with every request shape it can serve, then report what broke.
+
+    The suite is capability-matched: a model with ``supports_images`` gets the vision cases, one
+    with ``supports_tools`` the tool-call cases, and so on (``heavy_test_cases`` lists them all),
+    so a multimodal model is genuinely tested harder than a text-only one. Each answer is judged
+    against declarative expectations — did the tool call fire, did the JSON parse, did the stop
+    sequence hold, did the stream truncate with ``finish_reason=length``.
+
+    **This spends real money and real quota**: it issues ``n x len(selected cases)`` requests
+    (~20 cases for a fully capable model, so n=5 is ~100 calls) and takes roughly
+    ``total / rate`` minutes. Launches are paced, not serialized: one request goes out every
+    ``60 / rate`` seconds whatever the previous one is doing, so slow answers overlap the way
+    production traffic does.
+
+    Args:
+        model: chat model name as registered on the gateway (e.g. ``gpt-5.6-terra``).
+        n: how many times to replay the whole suite. Default 5.
+        rate: launch rate in requests per minute. Default 6 (one every 10 seconds).
+        plan: optional hosting plan to route under.
+        only: restrict to these case ids or tags (e.g. ``["tools"]``, ``["smoke", "streaming"]``).
+        operation: usage tag written to the gateway usage log.
+        max_concurrency: ceiling on in-flight requests.
+        budget_seconds: stop launching new requests after this much wall-clock (in-flight ones finish).
+        include_runs: return every individual run record, not just the summary and the failures.
+
+    Returns:
+        Pass rate and status breakdown, latency and TTFT percentiles, token/cost totals, a
+        per-case table, which deployments served the traffic, a determinism check, and the
+        failing runs with their reasons. Works with any API key.
+    """
+    try:
+        async with _client() as client:
+            return await run_heavy_test(
+                client,
+                model,
+                n=n,
+                rate=rate,
+                plan=plan,
+                only=only,
+                operation=operation,
+                max_concurrency=max_concurrency,
+                budget_seconds=budget_seconds,
+                include_runs=include_runs,
+            )
+    except LLMError as exc:
+        return {"error": _dev_error(exc)}
 
 
 def main() -> None:

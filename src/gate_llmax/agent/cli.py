@@ -3,10 +3,15 @@
     gate-llmax agent install [--project DIR] [--force]   copy the skill + register the MCP
     gate-llmax agent mcp                                  run the MCP server over stdio
     gate-llmax agent uninstall [--project DIR]            remove the skill + MCP entry
+    gate-llmax heavy-test MODEL [-n N] [--rate R]         hammer a chat model, print the report
 
-``install`` writes ``<project>/.claude/skills/gate-llmax/SKILL.md`` and adds a ``gate-llmax``
-server to ``<project>/.mcp.json`` (preserving any other servers). Run it from the consumer
-project, e.g. ``uv run gate-llmax agent install``.
+``install`` writes ``<project>/.claude/skills/gate-llmax/SKILL.md``, adds a ``gate-llmax`` server
+to ``<project>/.mcp.json`` (preserving any other servers), then prompts for the gateway URL and
+API key, verifies them, and stores them outside the project so nothing has to be exported by
+hand. Run it from the consumer project, e.g. ``uv run gate-llmax agent install``.
+
+``heavy-test`` is the MCP ``heavy_test`` tool on the command line — same suite, same report, as
+JSON on stdout. It uses the same credentials and spends real quota.
 """
 
 from __future__ import annotations
@@ -17,6 +22,8 @@ import importlib.resources
 import json
 import sys
 from pathlib import Path
+
+from gate_llmax.agent import credentials
 
 _MCP_SERVER_KEY = "gate-llmax"
 
@@ -29,20 +36,64 @@ def _skill_text() -> str:
 def _mcp_server_entry() -> dict:
     """The ``.mcp.json`` entry that launches this MCP server.
 
-    ``${VAR}`` values are expanded by Claude Code from the environment, so no secrets are written
-    into the file — set GATE_BASE_URL and GATE_API_KEY (a dev key) in your shell / .env.
+    No secrets here: the server reads GATE_BASE_URL / GATE_API_KEY from its own environment, and
+    falls back to the credentials file this command prompts for.
     """
     return {
         "command": "uv",
         "args": ["run", "gate-llmax", "agent", "mcp"],
-        "env": {
-            "GATE_BASE_URL": "${GATE_BASE_URL}",
-            "GATE_API_KEY": "${GATE_API_KEY}",
-        },
     }
 
 
-def _install(project: Path, *, force: bool) -> int:
+def _probe(base_url: str, api_key: str) -> str | None:
+    """Call the gateway once; return an error message, or None when the credentials work."""
+    import asyncio
+
+    from gate_llmax.client import LLMClient
+
+    async def run() -> None:
+        async with LLMClient(api_key=api_key, base_url=base_url, timeout=30) as client:
+            await client.list_models()
+
+    try:
+        asyncio.run(run())
+    except Exception as exc:  # any failure is reported verbatim
+        return str(exc)
+    return None
+
+
+def _prompt_credentials() -> None:
+    """Ask for the gateway URL and key, then store them for the MCP server to pick up."""
+    import getpass
+
+    current_url, current_key = credentials.resolve()
+
+    suffix = f" [{current_url}]" if current_url else ""
+    base_url = input(f"Gate base URL{suffix}: ").strip() or current_url
+    if not base_url:
+        print("• skipped: no base URL given; the MCP server will have no gateway to talk to.")
+        return
+
+    suffix = " [keep existing]" if current_key else ""
+    api_key = getpass.getpass(f"Gate API key (dev key unlocks the plan tools){suffix}: ").strip() or current_key
+    if not api_key:
+        print("• skipped: no API key given; the MCP server will have no credentials.")
+        return
+
+    error = _probe(base_url, api_key)
+    if error:
+        print(f"⚠ the gateway rejected these credentials: {error}")
+        if input("  save them anyway? [y/N]: ").strip().lower() not in {"y", "yes"}:
+            print("• not saved.")
+            return
+    else:
+        print("✓ credentials verified against the gateway")
+
+    path = credentials.save(base_url, api_key)
+    print(f"✓ saved   {path}")
+
+
+def _install(project: Path, *, force: bool, prompt: bool) -> int:
     project = project.resolve()
     if not project.is_dir():
         print(f"error: project directory does not exist: {project}", file=sys.stderr)
@@ -86,13 +137,16 @@ def _install(project: Path, *, force: bool) -> int:
     except ModuleNotFoundError:
         have_mcp = False
 
+    if prompt and sys.stdin.isatty():
+        print()
+        _prompt_credentials()
+    else:
+        print("\n• skipped the credentials prompt; export GATE_BASE_URL and GATE_API_KEY instead.")
+
     print("\nNext steps:")
     if not have_mcp:
         print('  1. Add the MCP runtime dependency:  uv add "gate-llmax[agent]"')
-    print(f"  {'2' if not have_mcp else '1'}. Export your gateway config (a dev key unlocks the plan tools):")
-    print("       export GATE_BASE_URL=https://your-gate-instance")
-    print("       export GATE_API_KEY=your-dev-key")
-    print(f"  {'3' if not have_mcp else '2'}. Restart Claude Code (or run /mcp) so it picks up the 'gate-llmax' server.")
+    print(f"  {'2' if not have_mcp else '1'}. Restart Claude Code (or run /mcp) so it picks up the 'gate-llmax' server.")
     return 0
 
 
@@ -130,6 +184,35 @@ def _run_mcp() -> int:
     return 0
 
 
+def _heavy_test(args: argparse.Namespace) -> int:
+    """Run the heavy-test suite against one model and print the JSON report."""
+    import asyncio
+
+    from gate_llmax.agent.heavy_test import run_heavy_test
+    from gate_llmax.client import LLMClient
+
+    base_url, api_key = credentials.resolve()
+    if not base_url or not api_key:
+        print("error: no gateway config. Run `gate-llmax agent install`, or export GATE_BASE_URL / GATE_API_KEY.", file=sys.stderr)
+        return 1
+
+    async def run() -> dict:
+        async with LLMClient(api_key=api_key, base_url=base_url, timeout=args.timeout) as client:
+            return await run_heavy_test(
+                client,
+                args.model,
+                n=args.n,
+                rate=args.rate,
+                plan=args.plan,
+                only=args.only,
+                include_runs=args.include_runs,
+            )
+
+    report = asyncio.run(run())
+    print(json.dumps(report, indent=2, ensure_ascii=False))
+    return 1 if report.get("error") else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for the ``gate-llmax`` console script."""
     parser = argparse.ArgumentParser(prog="gate-llmax", description="Gate LLM gateway client tooling.")
@@ -141,17 +224,30 @@ def main(argv: list[str] | None = None) -> int:
     p_install = actions.add_parser("install", help="Install the Gate skill + MCP into a project.")
     p_install.add_argument("--project", default=".", help="Project directory to install into (default: cwd).")
     p_install.add_argument("--force", action="store_true", help="Overwrite an existing skill without the notice.")
+    p_install.add_argument("--no-prompt", action="store_true", help="Don't ask for gateway credentials.")
 
     actions.add_parser("mcp", help="Run the Gate MCP server over stdio.")
 
     p_uninstall = actions.add_parser("uninstall", help="Remove the Gate skill + MCP from a project.")
     p_uninstall.add_argument("--project", default=".", help="Project directory to clean (default: cwd).")
 
+    heavy = sub.add_parser("heavy-test", help="Hammer a chat model with every request shape it can serve.")
+    heavy.add_argument("model", help="Chat model name as registered on the gateway.")
+    heavy.add_argument("-n", type=int, default=5, help="How many times to replay the suite (default: 5).")
+    heavy.add_argument("--rate", type=float, default=6.0, help="Launch rate in requests per minute (default: 6).")
+    heavy.add_argument("--plan", default=None, help="Hosting plan to route under.")
+    heavy.add_argument("--only", nargs="*", default=None, help="Restrict to these case ids or tags.")
+    heavy.add_argument("--timeout", type=int, default=240, help="Per-request timeout in seconds (default: 240).")
+    heavy.add_argument("--include-runs", action="store_true", help="Include every individual run in the report.")
+
     args = parser.parse_args(argv)
+
+    if args.group == "heavy-test":
+        return _heavy_test(args)
 
     if args.group == "agent":
         if args.action == "install":
-            return _install(Path(args.project), force=args.force)
+            return _install(Path(args.project), force=args.force, prompt=not args.no_prompt)
         if args.action == "mcp":
             return _run_mcp()
         if args.action == "uninstall":
