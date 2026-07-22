@@ -21,7 +21,7 @@ from gate_llmax.models.config import ExtraAttributeName, ModelInfo, ModelPlanRow
 from gate_llmax.models.dubbing import DubbingRequest, DubbingResponse
 from gate_llmax.models.embed import EmbedRequest, EmbedResponse
 from gate_llmax.models.images import AspectRatio, ImageData, ImageQuality, ImageRequest, ImageResponse, ImageSize
-from gate_llmax.models.messages import Message
+from gate_llmax.models.messages import Message, MessageRole, TextMessage
 from gate_llmax.models.request import LLMRequest, RequestSpecifics, ResolveRequest, ZoneSelection
 from gate_llmax.models.response import (
     LLMCallRecord,
@@ -68,8 +68,11 @@ POOL_TIMEOUT = 10.0
 # SSE read timeout is the gap *between* frames, not the whole stream: a large-context
 # first token can take far longer than the request timeout allows for a unary call.
 STREAM_READ_TIMEOUT = 300.0
-STREAM_MAX_RETRIES = 2  # extra attempts, only while nothing has been yielded yet
+STREAM_MAX_RETRIES = 2  # resume attempts after a severed connection
 STREAM_RETRY_BACKOFF = 0.5
+# finish_reason on the terminal chunk when a drop could not be resumed — the answer above it
+# is partial. Callers that only branch on "stop"/"length" can ignore it; the stream still ends.
+STREAM_INTERRUPTED = "interrupted"
 
 # Transport faults that are transient by nature — the connection dropped, no answer was given.
 # Timeouts and connect failures are handled separately (they map to their own exceptions).
@@ -881,48 +884,61 @@ class LLMClient:
         except httpx.ConnectError as exc:
             raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
 
+    async def _stream_once(self, request: LLMRequest) -> AsyncIterator[StreamChunk]:
+        """One POST with stream=True — the wire leg the retry loop in ``_stream`` drives."""
+        async with self._http.stream(
+            "POST",
+            "/v1/chat/completions",
+            content=request.model_dump_json(),
+            headers={"Content-Type": "application/json"},
+            timeout=self._stream_timeout,
+        ) as response:
+            if response.status_code >= 400:
+                await response.aread()
+            _raise_for_status(response)
+            async for chunk in StreamResponse(response):
+                yield chunk
+
     async def _stream(self, request: LLMRequest, *, priority: int = 0) -> AsyncIterator[StreamChunk]:
         """POST with stream=True, throttled by the client's rate limiter (no-op when unset).
 
-        A dropped connection is retried with exponential backoff, but only while no chunk has
-        reached the caller — once text is out, re-sending would duplicate it, so the drop is
-        surfaced as ``LLMConnectionError`` for the caller to handle.
+        A severed connection is handled here, not by the caller: the stream restarts, resuming
+        from the text already delivered (fed back as an assistant turn) so the caller sees one
+        uninterrupted sequence of chunks. Once the attempts are spent — or when a tool call was
+        mid-flight, which cannot be resumed — the stream ends on a chunk carrying
+        ``finish_reason="interrupted"`` instead of raising, so a dropped connection truncates an
+        answer rather than killing the caller's turn.
         """
         async with self._limiter.guard(priority):
             total = 0
-            emitted = False
+            delivered = ""  # text already handed to the caller; the resume point
+            tool_started = False
             attempt = 0
             while True:
                 try:
-                    async with self._http.stream(
-                        "POST",
-                        "/v1/chat/completions",
-                        content=request.model_dump_json(),
-                        headers={"Content-Type": "application/json"},
-                        timeout=self._stream_timeout,
-                    ) as response:
-                        if response.status_code >= 400:
-                            await response.aread()
-                        _raise_for_status(response)
-                        stream = StreamResponse(response)
-                        async for chunk in stream:
-                            if chunk.output_tokens is not None:
-                                total = (chunk.input_tokens or 0) + (chunk.output_tokens or 0)
-                            emitted = True
-                            yield chunk
+                    async for chunk in self._stream_once(resume_request(request, delivered) if delivered else request):
+                        if chunk.output_tokens is not None:
+                            total = (chunk.input_tokens or 0) + (chunk.output_tokens or 0)
+                        if chunk.tool_calls_delta:
+                            tool_started = True
+                        delivered += chunk.text
+                        yield chunk
                     break
                 except httpx.TimeoutException as exc:
                     raise LLMTimeoutError(f"Stream timed out: {exc}") from exc
                 except httpx.ConnectError as exc:
                     raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
                 except TRANSIENT_STREAM_ERRORS as exc:
-                    if emitted:
-                        raise LLMConnectionError(f"Stream interrupted after {total} tokens: {exc!r}") from exc
-                    if attempt >= STREAM_MAX_RETRIES:
-                        raise LLMConnectionError(f"Stream failed to start after {attempt + 1} attempts: {exc!r}") from exc
+                    # A half-streamed tool call cannot be resumed: its arguments are truncated
+                    # JSON, and re-asking would emit a second call the caller would merge into
+                    # the first. Stop cleanly and let the caller retry the whole turn.
+                    if tool_started or attempt >= STREAM_MAX_RETRIES:
+                        logger.exception("stream: dropped after %d chars, giving up", len(delivered))
+                        yield StreamChunk(is_done=True, finish_reason=STREAM_INTERRUPTED)
+                        break
                     delay = STREAM_RETRY_BACKOFF * 2**attempt
                     attempt += 1
-                    logger.warning("stream: transport dropped before first chunk (%r); retry %d in %.1fs", exc, attempt, delay)
+                    logger.warning("stream: dropped after %d chars (%r); resuming in %.1fs (try %d)", len(delivered), exc, delay, attempt)
                     await asyncio.sleep(delay)
         self._limiter.record_tokens(total)
 
@@ -1041,6 +1057,15 @@ TTSRequestBuilder.model_rebuild(_types_namespace={"LLMClient": LLMClient})
 AudioGenRequestBuilder.model_rebuild(_types_namespace={"LLMClient": LLMClient})
 VideoRequestBuilder.model_rebuild(_types_namespace={"LLMClient": LLMClient})
 DirectRequestBuilder.model_rebuild(_types_namespace={"LLMClient": LLMClient})
+
+
+def resume_request(request: LLMRequest, delivered: str) -> LLMRequest:
+    """The same request with ``delivered`` fed back as an assistant turn, so the model continues it.
+
+    Always built from the original messages, so repeated resumes append one turn, not a chain of them.
+    """
+    resumed = Message(role=MessageRole.ASSISTANT, content=[TextMessage(text=delivered)])
+    return request.model_copy(update={"messages": [*request.messages, resumed]})
 
 
 def seed_to_token(seed: object | None) -> str | None:
