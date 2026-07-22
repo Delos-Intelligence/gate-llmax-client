@@ -93,6 +93,7 @@ class StreamChunkDelta(BaseModel):
     """Delta content for a streaming chunk (OpenAI compat)."""
 
     content: str | None = None
+    reasoning_content: str | None = None
     tool_calls: list[JsonDict] | None = None
 
 
@@ -142,6 +143,7 @@ class StreamChunk(BaseModel):
             StreamChunkChoice(
                 delta=StreamChunkDelta(
                     content=self.text or None,
+                    reasoning_content=self.reasoning or None,
                     tool_calls=self.tool_calls_delta,
                 ),
                 finish_reason=self.finish_reason,
@@ -329,6 +331,7 @@ class LLMResponse(LLMCallRecord):
     """
 
     raw_text: str = ""
+    reasoning: str = Field(default="", description="Assistant reasoning/thinking text (empty string when none).")
     tool_calls: list[ToolCall] | None = None
     json_object: JsonDict | None = None
     choices: list[str] | None = Field(
@@ -349,6 +352,8 @@ class LLMResponse(LLMCallRecord):
     def to_openai_completion(self, *, model: str, completion_id: str, created: int) -> JsonDict:
         """Serialize as an OpenAI ChatCompletion dict (single choice; ``finish_reason`` from tool calls)."""
         message: dict[str, Any] = {"role": "assistant", "content": self.raw_text or None}
+        if self.reasoning:
+            message["reasoning_content"] = self.reasoning
         if self.tool_calls:
             message["tool_calls"] = [tc.model_dump() for tc in self.tool_calls]
         return {

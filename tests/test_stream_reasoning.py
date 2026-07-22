@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from gate_llmax.models.response import StreamChunk
+from gate_llmax.models.response import LLMResponse, StreamChunk
 
 
 def _chunk(*, content: str | None = None, reasoning: str | None = None, reasoning_content: str | None = None) -> SimpleNamespace:
@@ -32,3 +32,26 @@ def test_from_openai_no_reasoning_is_empty() -> None:
     sc = StreamChunk.from_openai(_chunk(content="hello"))
     assert sc.reasoning == ""
     assert sc.text == "hello"
+
+
+def test_to_openai_chunk_carries_reasoning() -> None:
+    chunk = StreamChunk(reasoning="abc").to_openai_chunk(model="m", completion_id="c", created=0)
+    assert chunk["choices"][0]["delta"]["reasoning_content"] == "abc"
+
+
+def test_to_openai_chunk_omits_reasoning_when_text_only() -> None:
+    chunk = StreamChunk(text="hi").to_openai_chunk(model="m", completion_id="c", created=0)
+    assert "reasoning_content" not in chunk["choices"][0]["delta"]
+    assert chunk["choices"][0]["delta"]["content"] == "hi"
+
+
+def test_to_openai_completion_carries_reasoning() -> None:
+    completion = LLMResponse(reasoning="xyz", raw_text="hi").to_openai_completion(model="m", completion_id="c", created=0)
+    message = completion["choices"][0]["message"]
+    assert message["reasoning_content"] == "xyz"
+    assert message["content"] == "hi"
+
+
+def test_to_openai_completion_omits_reasoning_when_empty() -> None:
+    completion = LLMResponse(raw_text="hi").to_openai_completion(model="m", completion_id="c", created=0)
+    assert "reasoning_content" not in completion["choices"][0]["message"]
