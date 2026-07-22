@@ -6,9 +6,11 @@
     gate-llmax heavy-test MODEL [-n N] [--rate R]         hammer a chat model, print the report
 
 ``install`` writes ``<project>/.claude/skills/gate-llmax/SKILL.md``, adds a ``gate-llmax`` server
-to ``<project>/.mcp.json`` (preserving any other servers), then prompts for the gateway URL and
-API key, verifies them, and stores them outside the project so nothing has to be exported by
-hand. Run it from the consumer project, e.g. ``uv run gate-llmax agent install``.
+to ``<project>/.mcp.json`` (preserving any other servers), then settles the gateway credentials:
+it reads them from the project's own env files when they are there (any prefix, e.g.
+``COSMOS_GATE_API_KEY``) and otherwise prompts. Either way it verifies them against the gateway
+and stores them outside the project, so no secret lands in ``.mcp.json`` and nothing has to be
+exported by hand. Run it from the consumer project, e.g. ``uv run gate-llmax agent install``.
 
 ``heavy-test`` is the MCP ``heavy_test`` tool on the command line — same suite, same report, as
 JSON on stdout. It uses the same credentials and spends real quota.
@@ -23,7 +25,7 @@ import json
 import sys
 from pathlib import Path
 
-from gate_llmax.agent import credentials
+from gate_llmax.agent import credentials, env_discovery
 
 _MCP_SERVER_KEY = "gate-llmax"
 
@@ -62,6 +64,40 @@ def _probe(base_url: str, api_key: str) -> str | None:
     return None
 
 
+def _verify_and_save(base_url: str, api_key: str, *, interactive: bool) -> None:
+    """Probe the gateway with these credentials, then store them for the MCP server to pick up."""
+    error = _probe(base_url, api_key)
+    if error:
+        print(f"⚠ the gateway rejected these credentials: {error}")
+        if interactive and input("  save them anyway? [y/N]: ").strip().lower() not in {"y", "yes"}:
+            print("• not saved.")
+            return
+    else:
+        print("✓ credentials verified against the gateway")
+
+    path = credentials.save(base_url, api_key)
+    print(f"✓ saved   {path}")
+
+
+def _configure_credentials(project: Path, *, prompt: bool) -> None:
+    """Store the gateway credentials, reusing the project's own env files when they carry them."""
+    interactive = prompt and sys.stdin.isatty()
+
+    found = env_discovery.discover(project)
+    if found:
+        print(f"\n✓ found  {found.base_url} + an API key in {found.source.relative_to(project)}")
+        if not interactive or input("  use them? [Y/n]: ").strip().lower() not in {"n", "no"}:
+            _verify_and_save(found.base_url, found.api_key, interactive=interactive)
+            return
+
+    if not interactive:
+        print("\n• no gateway credentials in the project's env files; export GATE_BASE_URL and GATE_API_KEY instead.")
+        return
+
+    print()
+    _prompt_credentials()
+
+
 def _prompt_credentials() -> None:
     """Ask for the gateway URL and key, then store them for the MCP server to pick up."""
     import getpass
@@ -80,17 +116,7 @@ def _prompt_credentials() -> None:
         print("• skipped: no API key given; the MCP server will have no credentials.")
         return
 
-    error = _probe(base_url, api_key)
-    if error:
-        print(f"⚠ the gateway rejected these credentials: {error}")
-        if input("  save them anyway? [y/N]: ").strip().lower() not in {"y", "yes"}:
-            print("• not saved.")
-            return
-    else:
-        print("✓ credentials verified against the gateway")
-
-    path = credentials.save(base_url, api_key)
-    print(f"✓ saved   {path}")
+    _verify_and_save(base_url, api_key, interactive=True)
 
 
 def _install(project: Path, *, force: bool, prompt: bool) -> int:
@@ -137,11 +163,7 @@ def _install(project: Path, *, force: bool, prompt: bool) -> int:
     except ModuleNotFoundError:
         have_mcp = False
 
-    if prompt and sys.stdin.isatty():
-        print()
-        _prompt_credentials()
-    else:
-        print("\n• skipped the credentials prompt; export GATE_BASE_URL and GATE_API_KEY instead.")
+    _configure_credentials(project, prompt=prompt)
 
     print("\nNext steps:")
     if not have_mcp:
@@ -224,7 +246,11 @@ def main(argv: list[str] | None = None) -> int:
     p_install = actions.add_parser("install", help="Install the Gate skill + MCP into a project.")
     p_install.add_argument("--project", default=".", help="Project directory to install into (default: cwd).")
     p_install.add_argument("--force", action="store_true", help="Overwrite an existing skill without the notice.")
-    p_install.add_argument("--no-prompt", action="store_true", help="Don't ask for gateway credentials.")
+    p_install.add_argument(
+        "--no-prompt",
+        action="store_true",
+        help="Never ask; take credentials from the project env files or leave them unset.",
+    )
 
     actions.add_parser("mcp", help="Run the Gate MCP server over stdio.")
 
