@@ -1,9 +1,13 @@
 """Gate MCP server — the minimum an agent needs to use Gate correctly.
 
-Exposes tools over a running Gate gateway: list models, list plans, check whether a model is
-reachable on a plan, build a ``call_prefer([...])`` fallback list that covers every plan an app
-serves, and — the one that spends money — ``heavy_test``, which hammers a chat model with every
-request shape it can serve and reports what broke.
+Two kinds of tools, and the difference matters:
+
+* **Free** — gateway metadata, no model ever runs, safe to call as often as you like:
+  ``ping``, ``list_models``, ``list_plans``, ``model_plan_matrix``, ``plan_models``,
+  ``model_in_plan``, ``prefer_list``, ``resolve``, ``heavy_test_cases``.
+* **Spends real money and quota** — ``heavy_test`` only. It is the deliberate "actually exercise
+  this model" tool: it fires ``n x cases`` real requests at a chat model. Never reach for it to
+  check the gateway is up or that a model exists — that is what ``ping`` and ``resolve`` are for.
 
 Config comes from the environment, falling back to the file ``gate-llmax agent install`` writes:
     GATE_BASE_URL   base URL of the Gate gateway (e.g. https://gate.example.com)
@@ -67,11 +71,52 @@ def _dev_error(exc: Exception) -> str:
 
 
 @mcp.tool()
+async def ping() -> dict[str, Any]:
+    """Free. Check the gateway is reachable and report which URL, key and plan access this server has.
+
+    The first thing to call when something looks wrong: round-trip to the gateway, how many models
+    it serves, and whether the configured key carries the ``dev`` flag the plan tools need. No
+    model is called, so it costs nothing.
+    """
+    import time
+
+    try:
+        base_url, api_key = _config()
+    except RuntimeError as exc:
+        return {"ok": False, "error": str(exc)}
+
+    started = time.perf_counter()
+    try:
+        async with _client() as client:
+            models = await client.list_models()
+    except Exception as exc:  # any failure is the answer here, not an error to raise
+        return {"ok": False, "base_url": base_url, "error": str(exc)}
+    latency_ms = round((time.perf_counter() - started) * 1000)
+
+    dev_key, dev_error = True, None
+    try:
+        async with _client() as client:
+            await client.list_plans()
+    except LLMError as exc:
+        dev_key, dev_error = False, str(exc)
+
+    return {
+        "ok": True,
+        "base_url": base_url,
+        "api_key": f"…{api_key[-4:]}",
+        "latency_ms": latency_ms,
+        "models": len(models),
+        "dev_key": dev_key,
+        "dev_key_error": dev_error,
+    }
+
+
+@mcp.tool()
 async def list_models(purpose: str | None = None) -> list[dict[str, Any]]:
-    """List models registered on the gateway (id, name, purpose, capabilities, prices).
+    """Free. List models registered on the gateway (id, name, purpose, capabilities, prices).
 
     Pass ``purpose`` (chat, embed, audio, vision, images, tts, audio_isolation, dubbing, video)
-    to filter. Works with any API key.
+    to filter. Metadata only — no model is called. Works with any API key.
     """
     try:
         async with _client() as client:
@@ -86,7 +131,7 @@ async def list_models(purpose: str | None = None) -> list[dict[str, Any]]:
 
 @mcp.tool()
 async def list_plans() -> list[dict[str, Any]]:
-    """List the gateway's hosting plans (cost/infra tiers), ordered by ``sort_order``.
+    """Free. List the gateway's hosting plans (cost/infra tiers), ordered by ``sort_order``.
 
     A plan is a named preset of hosting providers. Needs a **dev** API key.
     """
@@ -100,7 +145,7 @@ async def list_plans() -> list[dict[str, Any]]:
 
 @mcp.tool()
 async def model_plan_matrix(purpose: str | None = None) -> list[dict[str, Any]]:
-    """For every model, the plans it is reachable on (has a deployment on an admitted host).
+    """Free. For every model, the plans it is reachable on (has a deployment on an admitted host).
 
     Pass ``purpose`` to filter. Needs a **dev** API key. This is the raw data behind
     ``plan_models``, ``model_in_plan`` and ``prefer_list``.
@@ -118,7 +163,7 @@ async def model_plan_matrix(purpose: str | None = None) -> list[dict[str, Any]]:
 
 @mcp.tool()
 async def plan_models(plan_id: str, purpose: str | None = None) -> dict[str, Any]:
-    """List the models reachable on a given plan (optionally filtered by ``purpose``).
+    """Free. List the models reachable on a given plan (optionally filtered by ``purpose``).
 
     Needs a **dev** API key.
     """
@@ -133,7 +178,7 @@ async def plan_models(plan_id: str, purpose: str | None = None) -> dict[str, Any
 
 @mcp.tool()
 async def model_in_plan(model: str, plan_id: str) -> dict[str, Any]:
-    """Answer: is ``model`` reachable on ``plan_id``? Returns the model's full plan set too.
+    """Free. Answer: is ``model`` reachable on ``plan_id``? Returns the model's full plan set too.
 
     Needs a **dev** API key. Match is on the model's registered name (case-insensitive).
     """
@@ -161,7 +206,7 @@ async def prefer_list(
     prefer: list[str] | None = None,
     operation: str = "my-operation",
 ) -> dict[str, Any]:
-    """Build a ``call_prefer([...])`` fallback list that covers every plan an app serves.
+    """Free. Build a ``call_prefer([...])`` fallback list that covers every plan an app serves.
 
     Use this whenever the app targets cosmos-style plans. The returned ``models`` list, passed to
     ``.call_prefer(models)``, tries the best models first and always reaches a model reachable on
@@ -196,7 +241,7 @@ async def prefer_list(
 
 @mcp.tool()
 async def resolve(model: str, plan: str | None = None) -> dict[str, Any]:
-    """Preview what a chat call to ``model`` (optionally under ``plan``) would route to.
+    """Free. Preview what a chat call to ``model`` (optionally under ``plan``) would route to.
 
     Returns the resolved model and its candidate deployments without making a call — use it to
     confirm a model actually has a deployment under a plan. Works with any API key.
@@ -211,7 +256,7 @@ async def resolve(model: str, plan: str | None = None) -> dict[str, Any]:
 
 @mcp.tool()
 async def heavy_test_cases() -> list[dict[str, Any]]:
-    """List the request shapes ``heavy_test`` can run (id, intent, tags, required capabilities).
+    """Free. List the request shapes ``heavy_test`` can run (id, intent, tags, required capabilities).
 
     Use it to pick a ``only=[...]`` subset before spending money on a full run. No gateway call.
     """
@@ -231,7 +276,13 @@ async def heavy_test(
     *,
     include_runs: bool = False,
 ) -> dict[str, Any]:
-    """Hammer one chat model with every request shape it can serve, then report what broke.
+    """SPENDS REAL MONEY. Hammer one chat model with every request shape it can serve, report what broke.
+
+    This is the only tool here that calls a model. Use it deliberately — qualifying a model
+    before it goes in front of users, or proving a suspected regression. To check the gateway is
+    up use ``ping``; to check a model exists and has a deployment use ``resolve``; to see what the
+    suite would run use ``heavy_test_cases``. None of those cost anything. For a cheap first
+    signal, run the single smoke case once: ``heavy_test(model, n=1, only=["smoke"])``.
 
     The suite is capability-matched: a model with ``supports_images`` gets the vision cases, one
     with ``supports_tools`` the tool-call cases, and so on (``heavy_test_cases`` lists them all),

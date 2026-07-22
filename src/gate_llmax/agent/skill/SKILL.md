@@ -74,8 +74,10 @@ resp = await client.request(prompt=p, operation="op").call("gpt-4o")   # plan se
 
 Different users are on different plans, and **a model only resolves on plans whose hosting providers actually run it** — so a single hard-coded model can 404 for some users. The fix is one `call_prefer([...])` list ordered so that, whatever plan the user is on, the chain reaches a model available on it.
 
-**Don't guess the list — use the `gate-llmax` MCP.** It reads the live model×plan matrix:
+**Don't guess the list — use the `gate-llmax` MCP.** Every tool below is **free** (gateway
+metadata, no model ever runs) except `heavy_test`, which is the one that spends real quota:
 
+- `ping` — is the gateway reachable, which URL/key is configured, is it a dev key? Start here when something looks off.
 - `list_plans` — the plans the gateway serves (ordered).
 - `list_models` / `model_plan_matrix` — models and which plans each is reachable on.
 - `plan_models(plan_id)` — models available on one plan.
@@ -87,10 +89,13 @@ Typical flow: call `prefer_list` with the app's `purpose` (and `prefer` models i
 
 The plan tools need a **dev** API key (a key with the `dev` flag). `list_models` / `resolve` work with any key.
 
-## Checking a model actually works: heavy_test
+## Actually exercising a model: heavy_test (this one costs)
 
-Before putting a new model in front of users, hammer it with every request shape it can serve —
-the `gate-llmax` MCP exposes this as **`heavy_test`**:
+`heavy_test` is the only MCP tool that calls a model, and it calls it a lot. Reach for it when you
+mean to *qualify* a model — before it goes in front of users, or to prove a suspected regression.
+For "is the gateway up?" use `ping`, for "does this model exist / route under this plan?" use
+`resolve`, for "what would the suite run?" use `heavy_test_cases` — all free. For a cheap first
+signal, the single smoke case: `heavy_test(model, n=1, only=["smoke"])`.
 
 - `heavy_test_cases` — the catalogue (id, intent, tags, required capabilities). Free, no gateway call.
 - `heavy_test(model, n=5, rate=6, only=None, plan=None)` — run the capability-matched suite `n`

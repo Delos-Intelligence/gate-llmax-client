@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
+import logging
 import warnings
 from collections.abc import AsyncIterator
 from typing import Literal, Self, overload
@@ -61,6 +63,20 @@ from .streaming import StreamResponse
 _DEFAULT_TIMEOUT = 120.0
 MEDIA_CLIENT_TIMEOUT = 630.0  # dubbing/video are long-running; outlast the server-side wait
 
+CONNECT_TIMEOUT = 10.0
+POOL_TIMEOUT = 10.0
+# SSE read timeout is the gap *between* frames, not the whole stream: a large-context
+# first token can take far longer than the request timeout allows for a unary call.
+STREAM_READ_TIMEOUT = 300.0
+STREAM_MAX_RETRIES = 2  # extra attempts, only while nothing has been yielded yet
+STREAM_RETRY_BACKOFF = 0.5
+
+# Transport faults that are transient by nature — the connection dropped, no answer was given.
+# Timeouts and connect failures are handled separately (they map to their own exceptions).
+TRANSIENT_STREAM_ERRORS = (httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError)
+
+logger = logging.getLogger(__name__)
+
 
 class LLMClient:
     """HTTP client for the Gate gateway; use `.request(...).call(model)` and variants."""
@@ -78,6 +94,7 @@ class LLMClient:
     _default_plan: str | None
     _seed_routing_token: str | None
     _http: httpx.AsyncClient
+    _stream_timeout: httpx.Timeout
     _owns_http: bool
 
     def __init__(
@@ -159,7 +176,14 @@ class LLMClient:
         self._http = httpx_aclient or httpx.AsyncClient(
             base_url=self._base_url,
             headers={"X-Gate-Key": self._api_key},
-            timeout=timeout,
+            timeout=httpx.Timeout(timeout, connect=CONNECT_TIMEOUT, pool=POOL_TIMEOUT),
+        )
+        # Explicit per-phase budget for SSE: a slow first token must not be read-timed-out.
+        self._stream_timeout = httpx.Timeout(
+            STREAM_READ_TIMEOUT,
+            connect=CONNECT_TIMEOUT,
+            write=timeout,
+            pool=POOL_TIMEOUT,
         )
 
     def clear_usage_callbacks(self) -> None:
@@ -858,28 +882,48 @@ class LLMClient:
             raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
 
     async def _stream(self, request: LLMRequest, *, priority: int = 0) -> AsyncIterator[StreamChunk]:
-        """POST with stream=True, throttled by the client's rate limiter (no-op when unset)."""
+        """POST with stream=True, throttled by the client's rate limiter (no-op when unset).
+
+        A dropped connection is retried with exponential backoff, but only while no chunk has
+        reached the caller — once text is out, re-sending would duplicate it, so the drop is
+        surfaced as ``LLMConnectionError`` for the caller to handle.
+        """
         async with self._limiter.guard(priority):
             total = 0
-            try:
-                async with self._http.stream(
-                    "POST",
-                    "/v1/chat/completions",
-                    content=request.model_dump_json(),
-                    headers={"Content-Type": "application/json"},
-                ) as response:
-                    if response.status_code >= 400:
-                        await response.aread()
-                    _raise_for_status(response)
-                    stream = StreamResponse(response)
-                    async for chunk in stream:
-                        if chunk.output_tokens is not None:
-                            total = (chunk.input_tokens or 0) + (chunk.output_tokens or 0)
-                        yield chunk
-            except httpx.TimeoutException as exc:
-                raise LLMTimeoutError(f"Stream timed out: {exc}") from exc
-            except httpx.ConnectError as exc:
-                raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
+            emitted = False
+            attempt = 0
+            while True:
+                try:
+                    async with self._http.stream(
+                        "POST",
+                        "/v1/chat/completions",
+                        content=request.model_dump_json(),
+                        headers={"Content-Type": "application/json"},
+                        timeout=self._stream_timeout,
+                    ) as response:
+                        if response.status_code >= 400:
+                            await response.aread()
+                        _raise_for_status(response)
+                        stream = StreamResponse(response)
+                        async for chunk in stream:
+                            if chunk.output_tokens is not None:
+                                total = (chunk.input_tokens or 0) + (chunk.output_tokens or 0)
+                            emitted = True
+                            yield chunk
+                    break
+                except httpx.TimeoutException as exc:
+                    raise LLMTimeoutError(f"Stream timed out: {exc}") from exc
+                except httpx.ConnectError as exc:
+                    raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
+                except TRANSIENT_STREAM_ERRORS as exc:
+                    if emitted:
+                        raise LLMConnectionError(f"Stream interrupted after {total} tokens: {exc!r}") from exc
+                    if attempt >= STREAM_MAX_RETRIES:
+                        raise LLMConnectionError(f"Stream failed to start after {attempt + 1} attempts: {exc!r}") from exc
+                    delay = STREAM_RETRY_BACKOFF * 2**attempt
+                    attempt += 1
+                    logger.warning("stream: transport dropped before first chunk (%r); retry %d in %.1fs", exc, attempt, delay)
+                    await asyncio.sleep(delay)
         self._limiter.record_tokens(total)
 
     async def _send_video(self, request: VideoRequest) -> VideoResponse:
