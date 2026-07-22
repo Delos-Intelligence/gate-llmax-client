@@ -21,6 +21,7 @@ finding here reproduces by hand in one click.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
@@ -31,7 +32,7 @@ from gate_llmax.exceptions import LLMError
 from gate_llmax.models.config import ModelInfo, ModelPurpose
 from gate_llmax.models.messages import Message
 from gate_llmax.models.request import RequestSpecifics
-from gate_llmax.models.response import LLMResponse, StreamChunk
+from gate_llmax.models.response import LLMResponse, StreamChunk, ToolCall, ToolFunction
 from gate_llmax.types import JsonDict, ReasoningEffort
 
 DEFAULT_N = 5
@@ -99,6 +100,34 @@ LOG_OBSERVATION_TOOL: JsonDict = {
         },
     },
 }
+
+DISCOVER_SKILL_TOOL: JsonDict = {
+    "type": "function",
+    "function": {
+        "name": "discover_skill",
+        "description": "Load a skill, making its tools available for the rest of the conversation.",
+        "parameters": {"type": "object", "properties": {"skill": {"type": "string"}}, "required": ["skill"]},
+    },
+}
+
+BOOK_FLIGHT_TOOL: JsonDict = {
+    "type": "function",
+    "function": {
+        "name": "book_flight",
+        "description": "Book a flight. Only available once the travel skill has been discovered.",
+        "parameters": {
+            "type": "object",
+            "properties": {"origin": {"type": "string"}, "destination": {"type": "string"}},
+            "required": ["origin", "destination"],
+        },
+    },
+}
+
+
+def weather_call(call_id: str = "call_weather_1", city: str = "Paris") -> ToolCall:
+    """An assistant turn's request for ``get_weather`` — the history a follow-up case replays."""
+    return ToolCall(id=call_id, function=ToolFunction(name="get_weather", arguments=json.dumps({"city": city, "unit": "celsius"})))
+
 
 CACHE_SYSTEM_PROMPT = "You are a routing assistant for an LLM gateway. " + (
     "Follow the operator handbook: deployments are ranked by priority, then by health, then by "
@@ -246,6 +275,86 @@ CASES: tuple[HeavyCase, ...] = (
         stream=True,
         specifics=RequestSpecifics(temperature=0, max_tokens=256),
         expect=Expect(non_empty=False, tool_calls_min=1),
+    ),
+    HeavyCase(
+        id="tool-followup",
+        label="Tool result follow-up",
+        intent="Assistant tool call + tool result already in history — the model must answer from it.",
+        tags=("tools", "context"),
+        needs=("tools",),
+        system_prompt="Use the tools you are given rather than guessing.",
+        messages=(
+            Message.user("What is the weather in Paris right now, in celsius?"),
+            Message.assistant_tool_calls([weather_call()]),
+            Message.tool("call_weather_1", '{"city": "Paris", "temp_c": 14, "condition": "light rain"}', name="get_weather"),
+        ),
+        tools=(WEATHER_TOOL,),
+        tool_choice="auto",
+        specifics=RequestSpecifics(temperature=0, max_tokens=120),
+        expect=Expect(contains_all=("14",)),
+    ),
+    HeavyCase(
+        id="tool-discovery",
+        label="Tool discovered mid-conversation",
+        intent="A tool absent from turn 1 appears in the tool list afterwards; the model must use it.",
+        tags=("tools", "context"),
+        needs=("tools",),
+        system_prompt="Use the tools you are given rather than guessing. Discovered tools stay available.",
+        messages=(
+            Message.user("I want to fly from Paris to Tokyo. Load whatever you need first."),
+            Message.assistant_tool_calls(
+                [ToolCall(id="call_discover_1", function=ToolFunction(name="discover_skill", arguments='{"skill": "travel"}'))],
+            ),
+            Message.tool("call_discover_1", '{"loaded": "travel", "new_tools": ["book_flight"]}', name="discover_skill"),
+            Message.user("Great — now book it."),
+        ),
+        # The tool list grew between turns: turn 1 offered only `discover_skill`.
+        tools=(DISCOVER_SKILL_TOOL, BOOK_FLIGHT_TOOL),
+        tool_choice="auto",
+        specifics=RequestSpecifics(temperature=0, max_tokens=256),
+        expect=Expect(non_empty=False, tool_calls_min=1, tool_names=("book_flight",)),
+    ),
+    HeavyCase(
+        id="tool-withdrawn",
+        label="Tool withdrawn after being called",
+        intent="History references a tool no longer offered — providers must not reject the request.",
+        tags=("tools", "context", "degradation"),
+        needs=("tools",),
+        system_prompt="Use the tools you are given rather than guessing.",
+        messages=(
+            Message.user("What is the weather in Paris right now, in celsius?"),
+            Message.assistant_tool_calls([weather_call()]),
+            Message.tool("call_weather_1", '{"city": "Paris", "temp_c": 14, "condition": "light rain"}', name="get_weather"),
+            Message.assistant("It is 14°C in Paris with light rain."),
+            Message.user("Thanks. What time is it there?"),
+        ),
+        # `get_weather` is gone from the list even though the history still calls it — what
+        # happens when a per-turn tool refresh drops a tool the conversation already used.
+        tools=(TIME_TOOL,),
+        tool_choice="auto",
+        specifics=RequestSpecifics(temperature=0, max_tokens=256),
+        expect=Expect(non_empty=False, tool_calls_min=1, tool_names=("get_local_time",)),
+    ),
+    HeavyCase(
+        id="tool-discovery-stream",
+        label="Tool discovered mid-conversation, streamed",
+        intent="The discovery flow over SSE — the shape cosmos actually runs.",
+        tags=("tools", "context", "streaming"),
+        needs=("tools",),
+        system_prompt="Use the tools you are given rather than guessing. Discovered tools stay available.",
+        messages=(
+            Message.user("I want to fly from Paris to Tokyo. Load whatever you need first."),
+            Message.assistant_tool_calls(
+                [ToolCall(id="call_discover_1", function=ToolFunction(name="discover_skill", arguments='{"skill": "travel"}'))],
+            ),
+            Message.tool("call_discover_1", '{"loaded": "travel", "new_tools": ["book_flight"]}', name="discover_skill"),
+            Message.user("Great — now book it."),
+        ),
+        tools=(DISCOVER_SKILL_TOOL, BOOK_FLIGHT_TOOL),
+        tool_choice="auto",
+        stream=True,
+        specifics=RequestSpecifics(temperature=0, max_tokens=256),
+        expect=Expect(non_empty=False, tool_calls_min=1, tool_names=("book_flight",)),
     ),
     HeavyCase(
         id="vision",
