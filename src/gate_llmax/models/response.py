@@ -33,7 +33,12 @@ class ToolCall(BaseModel):
         return cls.model_validate(tool_call, from_attributes=True)
 
 
-ROUND = 5
+# Cost decimals. Matches the scale of Gate's usage_logs.cost / usage_rollup.cost
+# columns (numeric(_, 10)) — anything finer is truncated by the database anyway.
+# Rounding shallower than this silently drops whole calls: at 5 decimals every
+# request costing under $0.000005 (a short gpt-4.1-nano or gpt-4o-mini call)
+# recorded as exactly 0.
+ROUND = 10
 
 
 class RawUsage(BaseModel):
