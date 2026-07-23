@@ -33,6 +33,7 @@ from gate_llmax.models.response import (
 )
 from gate_llmax.models.responses import ResponsesRequest, ResponsesResponse
 from gate_llmax.models.tts import TTSFormat, TTSRequest, TTSResponse
+from gate_llmax.models.usage import ApiKeyName, ErrorReport, ErrorSample, StoredPayload
 from gate_llmax.models.video import VideoAspectRatio, VideoDuration, VideoRequest, VideoResolution, VideoResponse
 from gate_llmax.models.vision import VisionOCRRequest
 from gate_llmax.ratelimit import RateLimit, RateLimiter
@@ -744,6 +745,78 @@ class LLMClient:
         response = await self._http.get("/v1/plans")
         _raise_for_status(response)
         return [PlanInfo.model_validate(item) for item in response.json()]
+
+    async def list_api_key_names(self) -> list[ApiKeyName]:
+        """GET /v1/usage/keys — every API key name. Requires a ``dev`` API key (403 otherwise).
+
+        The usage routes are addressed by key *name*, so this is how you learn the valid ones.
+        """
+        response = await self._http.get("/v1/usage/keys")
+        _raise_for_status(response)
+        return [ApiKeyName.model_validate(item) for item in response.json()]
+
+    async def usage_errors(
+        self,
+        *,
+        since: str = "24h",
+        keys: list[str] | None = None,
+        models: list[str] | None = None,
+        operations: list[str] | None = None,
+        statuses: list[str] | None = None,
+        limit: int = 50,
+    ) -> ErrorReport:
+        """GET /v1/usage/errors — what failed in a window, grouped, worst first.
+
+        ``since`` is a duration (``24h``, ``7d``, ``90m``, ``2w``) or an ISO timestamp.
+        ``keys`` filters by API key *name*; an unknown name is a 404 rather than an empty
+        result, so a typo can't read as "nothing failed". Requires a ``dev`` API key.
+        """
+        params: list[tuple[str, str | int | float | None]] = [("since", since), ("limit", limit)]
+        params += [("key", k) for k in keys or []]
+        params += [("model", m) for m in models or []]
+        params += [("operation", o) for o in operations or []]
+        params += [("status", s) for s in statuses or []]
+        response = await self._http.get("/v1/usage/errors", params=params)
+        _raise_for_status(response)
+        return ErrorReport.model_validate(response.json())
+
+    async def usage_error_samples(
+        self,
+        *,
+        since: str = "24h",
+        keys: list[str] | None = None,
+        statuses: list[str] | None = None,
+        operations: list[str] | None = None,
+        search: str | None = None,
+        replayable_only: bool = False,
+        limit: int = 20,
+    ) -> list[ErrorSample]:
+        """GET /v1/usage/error-samples — individual failed calls, newest first.
+
+        ``search`` matches a substring of the provider's error message. Requires a ``dev`` key.
+        """
+        params: list[tuple[str, str | int | float | None]] = [("since", since), ("limit", limit)]
+        params += [("key", k) for k in keys or []]
+        params += [("status", s) for s in statuses or []]
+        params += [("operation", o) for o in operations or []]
+        if search:
+            params.append(("search", search))
+        if replayable_only:
+            params.append(("replayable_only", "true"))
+        response = await self._http.get("/v1/usage/error-samples", params=params)
+        _raise_for_status(response)
+        return [ErrorSample.model_validate(item) for item in response.json()]
+
+    async def usage_payload(self, log_id: str) -> StoredPayload:
+        """GET /v1/usage/payload/{log_id} — the request body behind a failed call.
+
+        404 when nothing was stored: bodies are kept only for failures that reached a
+        provider, so successes and routing refusals have nothing to replay. Requires a
+        ``dev`` API key.
+        """
+        response = await self._http.get(f"/v1/usage/payload/{log_id}")
+        _raise_for_status(response)
+        return StoredPayload.model_validate(response.json())
 
     async def model_plan_matrix(self) -> list[ModelPlanRow]:
         """GET /v1/model-plan-matrix — every model and the plans it is reachable on.

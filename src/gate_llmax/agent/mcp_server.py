@@ -4,7 +4,8 @@ Two kinds of tools, and the difference matters:
 
 * **Free** — gateway metadata, no model ever runs, safe to call as often as you like:
   ``ping``, ``list_models``, ``list_plans``, ``model_plan_matrix``, ``plan_models``,
-  ``model_in_plan``, ``prefer_list``, ``resolve``, ``heavy_test_cases``.
+  ``model_in_plan``, ``prefer_list``, ``resolve``, ``heavy_test_cases``, ``list_api_keys``,
+  ``usage_errors``, ``usage_error_samples``, ``get_request_payload``.
 * **Spends real money and quota** — ``heavy_test`` only. It is the deliberate "actually exercise
   this model" tool: it fires ``n x cases`` real requests at a chat model. Never reach for it to
   check the gateway is up or that a model exists — that is what ``ping`` and ``resolve`` are for.
@@ -326,6 +327,148 @@ async def heavy_test(
                 budget_seconds=budget_seconds,
                 include_runs=include_runs,
             )
+    except LLMError as exc:
+        return {"error": _dev_error(exc)}
+
+
+# ---------------------------------------------------------------------------
+# Usage insights — what is failing on the gateway, and how to reproduce it.
+# All four need a **dev** API key, and all four see every key, not just this one.
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def list_api_keys() -> list[dict[str, Any]]:
+    """Free. List the gateway's API key names (never the secrets).
+
+    The usage tools below are addressed by key *name* — ``key="k8s cosmos prod"`` — so start
+    here when you do not already know the exact name. Needs a **dev** API key.
+    """
+    try:
+        async with _client() as client:
+            return [k.model_dump(mode="json") for k in await client.list_api_key_names()]
+    except LLMError as exc:
+        return [{"error": _dev_error(exc)}]
+
+
+@mcp.tool()
+async def usage_errors(
+    since: str = "24h",
+    keys: list[str] | None = None,
+    models: list[str] | None = None,
+    operations: list[str] | None = None,
+    statuses: list[str] | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Free. What failed on the gateway in a window, grouped and worst first.
+
+    The first thing to reach for when an app reports errors: it answers "how many, of what
+    kind, on which model and which key", and each group carries the most recent provider
+    message, so a count becomes a diagnosis in one call. No model runs; metadata only.
+
+    Args:
+        since: Duration (``1h``, ``24h``, ``7d``, ``2w``, ``90m``) or an ISO timestamp.
+            Maximum 90 days.
+        keys: API key **names** to restrict to (see ``list_api_keys``). Omit for all keys.
+            An unknown name is an error, not an empty result — a typo cannot read as
+            "nothing failed on that key".
+        models: Model names to keep.
+        operations: ``operation`` tags to keep (the caller-supplied label on each call).
+        statuses: OutputStatus values to keep, e.g. ``["TIMEOUT", "RATE_LIMIT"]``.
+        limit: Maximum groups returned (they are sorted worst first, so the head is the
+            part that matters).
+
+    Returns:
+        The window, ``total_failures``, a ``by_status`` histogram, and ``groups`` — each with
+        calls, cost, first/last seen, a ``sample_detail`` message, how many are ``replayable``
+        and a ``sample_log_id`` to hand to ``get_request_payload``. Needs a **dev** API key.
+    """
+    try:
+        async with _client() as client:
+            report = await client.usage_errors(
+                since=since,
+                keys=keys,
+                models=models,
+                operations=operations,
+                statuses=statuses,
+                limit=limit,
+            )
+    except LLMError as exc:
+        return {"error": _dev_error(exc)}
+    return report.model_dump(mode="json")
+
+
+@mcp.tool()
+async def usage_error_samples(
+    since: str = "24h",
+    keys: list[str] | None = None,
+    statuses: list[str] | None = None,
+    operations: list[str] | None = None,
+    search: str | None = None,
+    limit: int = 20,
+    *,
+    replayable_only: bool = False,
+) -> list[dict[str, Any]]:
+    """Free. Individual failed calls, newest first — the raw messages behind the counts.
+
+    Use after ``usage_errors`` when you need the actual wording of a failure, or to find a
+    specific one: ``search="context length"`` matches a substring of the provider's message.
+    Set ``replayable_only=True`` to keep only failures whose request body was captured.
+
+    Args:
+        since: Duration or ISO timestamp, as in ``usage_errors``.
+        keys: API key **names** to restrict to. Omit for all keys.
+        statuses: OutputStatus values to keep.
+        operations: ``operation`` tags to keep.
+        search: Substring the provider's error message must contain.
+        replayable_only: Keep only failures that can be replayed via ``get_request_payload``.
+        limit: Maximum rows (max 200).
+
+    Returns:
+        One row per failed call: timestamp, status, the provider's message, model, key,
+        deployment, timings, tokens, and whether its body was captured. Needs a **dev** key.
+    """
+    try:
+        async with _client() as client:
+            samples = await client.usage_error_samples(
+                since=since,
+                keys=keys,
+                statuses=statuses,
+                operations=operations,
+                search=search,
+                replayable_only=replayable_only,
+                limit=limit,
+            )
+    except LLMError as exc:
+        return [{"error": _dev_error(exc)}]
+    return [s.model_dump(mode="json") for s in samples]
+
+
+@mcp.tool()
+async def get_request_payload(log_id: str) -> dict[str, Any]:
+    """Free. The request body behind a failed call, ready to send again.
+
+    This is what turns "it failed" into "here is the exact request that failed": POST the
+    returned ``payload`` to the returned ``endpoint`` to reproduce it. Get a ``log_id`` from
+    ``usage_errors`` (``sample_log_id``) or ``usage_error_samples`` (``id``).
+
+    Bodies are stored only for failures that actually reached a provider — a routing refusal
+    has nothing to replay, and successes are not captured at all. Base64 attachments were
+    replaced by size markers when the row was written, so a payload with images replays as
+    text unless you re-attach them.
+
+    Note this returns the prompt as it was sent, including any tool schemas.
+
+    Args:
+        log_id: The usage log id.
+
+    Returns:
+        ``payload`` (the body), ``endpoint`` (where to POST it), plus the status, the
+        provider's error message and the model. Needs a **dev** API key.
+    """
+    try:
+        async with _client() as client:
+            return (await client.usage_payload(log_id)).model_dump(mode="json")
     except LLMError as exc:
         return {"error": _dev_error(exc)}
 
