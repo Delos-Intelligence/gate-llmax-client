@@ -76,6 +76,10 @@ class ErrorSample(BaseModel):
     latency_ms: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    reasoning_tokens: int = 0
+    finish_reason: str = ""
+    reasoning_preview: str = Field(default="", description="Start of the reasoning chain, when content came back empty.")
+    request_preview: dict[str, Any] | None = Field(default=None, description="Stripped request: message openings + reasoning knobs.")
     replayable: bool = False
 
 

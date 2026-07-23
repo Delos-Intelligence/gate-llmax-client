@@ -47,6 +47,7 @@ class RawUsage(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     cached_input_tokens: int = 0
+    reasoning_tokens: int = 0  # subset of output_tokens spent on the reasoning chain; informational, not billed twice
     input_cost: float = 0.0
     output_cost: float = 0.0
     model: str = ""
@@ -57,6 +58,7 @@ class RawUsage(BaseModel):
     duration_ms: int = 0
     ttft_ms: int | None = None
     operation: str = ""
+    finish_reason: str = ""  # why generation stopped (stop/length/tool_calls/…); "length" on an empty answer means the cap was hit
 
     @computed_field
     @property
@@ -76,6 +78,7 @@ class RawUsage(BaseModel):
             input_tokens=self.input_tokens + other.input_tokens,
             output_tokens=self.output_tokens + other.output_tokens,
             cached_input_tokens=self.cached_input_tokens + other.cached_input_tokens,
+            reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
             input_cost=round(self.input_cost + other.input_cost, ROUND),
             output_cost=round(self.output_cost + other.output_cost, ROUND),
             model=self.model or other.model,
@@ -86,6 +89,7 @@ class RawUsage(BaseModel):
             duration_ms=self.duration_ms + other.duration_ms,
             ttft_ms=self.ttft_ms if self.ttft_ms is not None else other.ttft_ms,
             operation=self.operation or other.operation,
+            finish_reason=self.finish_reason or other.finish_reason,
         )
 
 
