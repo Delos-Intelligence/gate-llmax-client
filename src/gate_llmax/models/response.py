@@ -306,6 +306,13 @@ class LLMCallRecord(BaseModel):
     model: str = ""
     deployment_id: UUID | None = None
     status: OutputStatus = OutputStatus.SUCCESS
+    detail: str = Field(
+        default="",
+        description=(
+            "Why a non-SUCCESS status happened, in the provider's own words (truncated). Empty on "
+            "success. The status says a request was refused; this says what to change about it."
+        ),
+    )
     latency_ms: int = 0
     cached: bool = Field(default=False, description="True when this response was replayed from the gateway response cache.")
 
