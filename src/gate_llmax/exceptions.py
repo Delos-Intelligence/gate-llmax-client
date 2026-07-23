@@ -27,6 +27,10 @@ class LLMCapabilityError(LLMError):
     """Raised when the request uses a feature the model does not support (HTTP 422)."""
 
 
+class LLMContentFilterError(LLMError):
+    """Raised when the upstream safety/content filter rejected the prompt (HTTP 400)."""
+
+
 class LLMServerError(LLMError):
     """Raised for unexpected 5xx responses from the gateway."""
 

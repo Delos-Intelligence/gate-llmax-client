@@ -43,6 +43,7 @@ from .exceptions import (
     LLMAuthError,
     LLMCapabilityError,
     LLMConnectionError,
+    LLMContentFilterError,
     LLMEscapeHatchWarning,
     LLMModelNotFoundError,
     LLMServerError,
@@ -1157,6 +1158,8 @@ def _raise_for_status(response: httpx.Response) -> None:
         raise LLMAuthError("Invalid or missing API key")
     if code == 404:
         raise LLMModelNotFoundError(_extract_detail(response.text))
+    if code == 400:
+        raise LLMContentFilterError(_extract_detail(response.text))
     if code == 422:
         raise LLMCapabilityError(_extract_detail(response.text))
     if code >= 500:
