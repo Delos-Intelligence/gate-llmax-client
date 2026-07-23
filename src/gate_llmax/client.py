@@ -60,13 +60,16 @@ from .request import (
 )
 from .streaming import StreamResponse
 
-_DEFAULT_TIMEOUT = 120.0
+# Outermost rung of the timeout ladder: strictly above Gate's own ceiling, so the gateway fires first.
+GATEWAY_MAX_BUDGET = 630.0
+CLIENT_MARGIN = 30.0
+DEFAULT_TIMEOUT = GATEWAY_MAX_BUDGET + CLIENT_MARGIN
 MEDIA_CLIENT_TIMEOUT = 630.0  # dubbing/video are long-running; outlast the server-side wait
 
 CONNECT_TIMEOUT = 10.0
 POOL_TIMEOUT = 10.0
 # The SSE read budget is the gap between frames, not the whole stream.
-STREAM_READ_TIMEOUT = 300.0
+STREAM_READ_TIMEOUT = GATEWAY_MAX_BUDGET + CLIENT_MARGIN
 STREAM_MAX_RETRIES = 2  # resume attempts after a severed connection
 STREAM_RETRY_BACKOFF = 0.5
 # finish_reason when a drop could not be resumed: the answer above it is partial.
@@ -101,7 +104,8 @@ class LLMClient:
         self,
         api_key: str,
         base_url: str,
-        timeout: float = _DEFAULT_TIMEOUT,
+        timeout: float = DEFAULT_TIMEOUT,
+        stream_read_timeout: float = STREAM_READ_TIMEOUT,
         cache_call: bool | None = None,
         cache_ttl: int | None = None,
         temperature: float | None = None,
@@ -119,7 +123,9 @@ class LLMClient:
         Args:
             api_key: Gate API key sent as ``X-Gate-Key`` on every request.
             base_url: Base URL of the Gate gateway (trailing slash stripped).
-            timeout: Default request timeout in seconds.
+            timeout: Default request timeout in seconds, applied per request even when
+                ``httpx_aclient`` is shared, so a pool default can never silently shorten it.
+            stream_read_timeout: Max gap between SSE frames before the client gives up.
             cache_call: Default response-cache switch applied to every call. ``None`` (the
                 default) defers to the API key's server-side ``response_caching`` default;
                 ``True`` / ``False`` force caching on / off. Per-call arguments override it.
@@ -179,7 +185,7 @@ class LLMClient:
             timeout=httpx.Timeout(timeout, connect=CONNECT_TIMEOUT, pool=POOL_TIMEOUT),
         )
         self._stream_timeout = httpx.Timeout(
-            STREAM_READ_TIMEOUT,
+            stream_read_timeout,
             connect=CONNECT_TIMEOUT,
             write=timeout,
             pool=POOL_TIMEOUT,
@@ -816,9 +822,11 @@ class LLMClient:
                     "/v1/chat/completions",
                     content=request.model_dump_json(),
                     headers={"Content-Type": "application/json"},
+                    # Explicit: a shared httpx_aclient must not decide this client's ceiling.
+                    timeout=self._timeout,
                 )
             except httpx.TimeoutException as exc:
-                raise LLMTimeoutError(f"Request timed out: {exc}") from exc
+                raise LLMTimeoutError(f"Client-side ceiling ({self._timeout:.0f}s) hit before the gateway answered: {exc}") from exc
             except httpx.ConnectError as exc:
                 raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
 
@@ -918,7 +926,9 @@ class LLMClient:
                         yield chunk
                     break
                 except httpx.TimeoutException as exc:
-                    raise LLMTimeoutError(f"Stream timed out: {exc}") from exc
+                    gap = self._stream_timeout.read or 0.0
+                    msg = f"Client-side stream ceiling ({gap:.0f}s frame gap) hit before the gateway sent a frame: {exc}"
+                    raise LLMTimeoutError(msg) from exc
                 except httpx.ConnectError as exc:
                     raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
                 except TRANSIENT_STREAM_ERRORS as exc:
