@@ -308,7 +308,6 @@ CASES: tuple[HeavyCase, ...] = (
             Message.tool("call_discover_1", '{"loaded": "travel", "new_tools": ["book_flight"]}', name="discover_skill"),
             Message.user("Great — now book it."),
         ),
-        # The tool list grew between turns: turn 1 offered only `discover_skill`.
         tools=(DISCOVER_SKILL_TOOL, BOOK_FLIGHT_TOOL),
         tool_choice="auto",
         specifics=RequestSpecifics(temperature=0, max_tokens=256),
@@ -328,8 +327,6 @@ CASES: tuple[HeavyCase, ...] = (
             Message.assistant("It is 14°C in Paris with light rain."),
             Message.user("Thanks. What time is it there?"),
         ),
-        # `get_weather` is gone from the list even though the history still calls it — what
-        # happens when a per-turn tool refresh drops a tool the conversation already used.
         tools=(TIME_TOOL,),
         tool_choice="auto",
         specifics=RequestSpecifics(temperature=0, max_tokens=256),

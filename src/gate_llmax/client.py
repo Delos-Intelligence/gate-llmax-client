@@ -65,17 +65,14 @@ MEDIA_CLIENT_TIMEOUT = 630.0  # dubbing/video are long-running; outlast the serv
 
 CONNECT_TIMEOUT = 10.0
 POOL_TIMEOUT = 10.0
-# SSE read timeout is the gap *between* frames, not the whole stream: a large-context
-# first token can take far longer than the request timeout allows for a unary call.
+# The SSE read budget is the gap between frames, not the whole stream.
 STREAM_READ_TIMEOUT = 300.0
 STREAM_MAX_RETRIES = 2  # resume attempts after a severed connection
 STREAM_RETRY_BACKOFF = 0.5
-# finish_reason on the terminal chunk when a drop could not be resumed — the answer above it
-# is partial. Callers that only branch on "stop"/"length" can ignore it; the stream still ends.
+# finish_reason when a drop could not be resumed: the answer above it is partial.
 STREAM_INTERRUPTED = "interrupted"
 
-# Transport faults that are transient by nature — the connection dropped, no answer was given.
-# Timeouts and connect failures are handled separately (they map to their own exceptions).
+# Timeouts and connect failures are handled separately, by their own exceptions.
 TRANSIENT_STREAM_ERRORS = (httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError)
 
 logger = logging.getLogger(__name__)
@@ -181,7 +178,6 @@ class LLMClient:
             headers={"X-Gate-Key": self._api_key},
             timeout=httpx.Timeout(timeout, connect=CONNECT_TIMEOUT, pool=POOL_TIMEOUT),
         )
-        # Explicit per-phase budget for SSE: a slow first token must not be read-timed-out.
         self._stream_timeout = httpx.Timeout(
             STREAM_READ_TIMEOUT,
             connect=CONNECT_TIMEOUT,
@@ -902,12 +898,9 @@ class LLMClient:
     async def _stream(self, request: LLMRequest, *, priority: int = 0) -> AsyncIterator[StreamChunk]:
         """POST with stream=True, throttled by the client's rate limiter (no-op when unset).
 
-        A severed connection is handled here, not by the caller: the stream restarts, resuming
-        from the text already delivered (fed back as an assistant turn) so the caller sees one
-        uninterrupted sequence of chunks. Once the attempts are spent — or when a tool call was
-        mid-flight, which cannot be resumed — the stream ends on a chunk carrying
-        ``finish_reason="interrupted"`` instead of raising, so a dropped connection truncates an
-        answer rather than killing the caller's turn.
+        A severed connection restarts here rather than reaching the caller, resuming from the
+        text already delivered. Once the attempts are spent the stream ends on a chunk carrying
+        ``finish_reason="interrupted"`` instead of raising.
         """
         async with self._limiter.guard(priority):
             total = 0
@@ -929,9 +922,8 @@ class LLMClient:
                 except httpx.ConnectError as exc:
                     raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
                 except TRANSIENT_STREAM_ERRORS as exc:
-                    # A half-streamed tool call cannot be resumed: its arguments are truncated
-                    # JSON, and re-asking would emit a second call the caller would merge into
-                    # the first. Stop cleanly and let the caller retry the whole turn.
+                    # A half-streamed tool call has truncated arguments; re-asking would emit
+                    # a second call the caller would merge into the first.
                     if tool_started or attempt >= STREAM_MAX_RETRIES:
                         logger.exception("stream: dropped after %d chars, giving up", len(delivered))
                         yield StreamChunk(is_done=True, finish_reason=STREAM_INTERRUPTED)
@@ -1062,7 +1054,7 @@ DirectRequestBuilder.model_rebuild(_types_namespace={"LLMClient": LLMClient})
 def resume_request(request: LLMRequest, delivered: str) -> LLMRequest:
     """The same request with ``delivered`` fed back as an assistant turn, so the model continues it.
 
-    Always built from the original messages, so repeated resumes append one turn, not a chain of them.
+    Built from the original messages, so repeated resumes append one turn rather than a chain.
     """
     resumed = Message(role=MessageRole.ASSISTANT, content=[TextMessage(text=delivered)])
     return request.model_copy(update={"messages": [*request.messages, resumed]})
