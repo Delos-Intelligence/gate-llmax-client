@@ -60,6 +60,13 @@ TEST_IMAGE_B64 = (
     "MmqxWGAR0Eym1BIsN9kAKINp2rUtWNoP6FestTe05A0QIECAAAECBEgAAQIECFC1PAHHKowo1PZjPwAAAABJRU5ErkJggg=="
 )
 
+# 96x96 PNG: one blue rectangle on a white background — a second, distinct image for the multi-image case.
+TEST_IMAGE_2_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAIAAABt+uBvAAAAl0lEQVR42u3asQ0AQAgDsey/NL8BouSFT2lpXJNSWxAAAgQIECBAgAAJECBAgAABAgRIgAABAgQIEC"
+    "BAAgQIECBAgAABAjQ9yN8DBAgQIECAAAECBAgQIECAAAECBAgQIECAAAECBAgQIECAtgN5XhAgQIAAAQIECJAAAQIECBAgQIAACRAgQIAAAQIESIAAAQIECBCgIz0u"
+    "U6d0FlU1sQAAAABJRU5ErkJggg=="
+)
+
 WEATHER_TOOL: JsonDict = {
     "type": "function",
     "function": {
@@ -363,6 +370,17 @@ CASES: tuple[HeavyCase, ...] = (
         images=(TEST_IMAGE_B64,),
         specifics=RequestSpecifics(temperature=0, max_tokens=64),
         expect=Expect(contains_all=("red",), contains_any=("circle", "circ", "round", "disc", "dot")),
+    ),
+    HeavyCase(
+        id="vision-multi",
+        label="Vision — two images",
+        intent="Two images in one turn; both must be seen, not just the first (multi-image regression).",
+        tags=("vision",),
+        needs=("images",),
+        prompt="Two images follow. Name the colour of each, in order.",
+        images=(TEST_IMAGE_B64, TEST_IMAGE_2_B64),
+        specifics=RequestSpecifics(temperature=0, max_tokens=64),
+        expect=Expect(contains_all=("red", "blue")),
     ),
     HeavyCase(
         id="vision-tools",

@@ -123,6 +123,15 @@ def test_latency_block_handles_the_empty_case():
     assert latency_block([10, 20, 30])["p50"] == 20
 
 
+def test_multi_image_case_needs_vision_and_carries_two_images():
+    case = next(c for c in CASES if c.id == "vision-multi")
+    assert len(case.images) == 2
+    assert case.images[0] != case.images[1]
+    assert case.expect.contains_all == ("red", "blue")
+    assert case not in select_cases(model())
+    assert case in select_cases(model(images=True))
+
+
 def test_catalogue_ids_are_unique_and_documented():
     rows = case_catalogue()
     assert len(rows) == len(CASES)
