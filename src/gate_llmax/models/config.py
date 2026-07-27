@@ -123,6 +123,8 @@ class ResolvedDeployment(BaseModel):
     region: str | None = None
     country: str | None = None
     priority: int
+    status: str = "ACTIVE"
+    last_error: str | None = Field(default=None, description="Most recent failing-ping error text; None when healthy.")
     selected: bool = Field(default=False, description="True if the call would hit this deployment (only set when a pin key is given).")
 
     @computed_field
@@ -144,6 +146,10 @@ class ResolveResponse(BaseModel):
         description="'pinned' when a seed_routing/session_id deterministically selects one deployment; 'round_robin' otherwise.",
     )
     candidates: list[ResolvedDeployment] = Field(description="All active deployments after zone filtering, ordered by priority.")
+    all_deployments: list[ResolvedDeployment] = Field(
+        default_factory=list,
+        description="Every deployment regardless of status (ERROR/INACTIVE/etc) — shows why a model has no routable candidates.",
+    )
     selected: ResolvedDeployment | None = Field(
         default=None,
         description="The deployment the call would hit, when deterministic (pin key given). None under round-robin (picked per-call).",
