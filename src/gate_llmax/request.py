@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar, cast, get_origin, overload
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
@@ -408,7 +408,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
 
     def with_tools(
         self,
-        tools: list[JsonDict],
+        tools: Sequence[Mapping[str, Any]],
         executor: ToolExecutor | None = None,
         *,
         stream_executor: StreamingToolExecutor | None = None,
@@ -439,7 +439,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         the loop stops offering tools and instructs the model to answer directly (prevents a
         too-large context from triggering yet another tool round). ``None`` disables the guard.
         """
-        self.tools = tools
+        self.tools = [dict(t) for t in tools]
         self.tool_executor = executor
         self.tool_stream_executor = stream_executor
         self.tool_max_iters = max_iters
