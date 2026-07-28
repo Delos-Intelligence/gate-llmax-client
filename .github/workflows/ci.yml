@@ -25,7 +25,9 @@ jobs:
           enable-cache: true
 
       - name: Sync environment
-        run: uv sync --group dev
+        # `--extra agent` installs `mcp`, which `ty check src` needs to resolve the
+        # imports in agent/cli.py and agent/mcp_server.py.
+        run: uv sync --group dev --extra agent
 
       - name: Ruff check
         run: uv run ruff check src tests
