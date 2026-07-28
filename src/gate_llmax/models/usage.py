@@ -83,6 +83,102 @@ class ErrorSample(BaseModel):
     replayable: bool = False
 
 
+class LatencyRow(BaseModel):
+    """Latency aggregates for one model or deployment (and input-size bucket when requested)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    model: str | None = None
+    deployment: str | None = None
+    bucket: str | None = Field(default=None, description="Input-token range label, e.g. `2k-20k`; None = all sizes.")
+    calls: int = 0
+    avg_input: int = 0
+    avg_output: int = 0
+    ttft_p50: int | None = None
+    ttft_p90: int | None = None
+    ttft_p99: int | None = None
+    dur_p50: int | None = None
+    dur_p90: int | None = None
+    decode_tps: float | None = Field(default=None, description="Output tokens per second after the first token.")
+
+
+class TimeseriesPoint(BaseModel):
+    """Traffic, failures, median TTFT and spend for one time bucket."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    t: datetime
+    calls: int = 0
+    failures: int = 0
+    ttft_p50: int | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost: float = 0.0
+
+
+class StatsRow(BaseModel):
+    """Success/failure totals for one model, key or operation."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = ""
+    calls: int = 0
+    failures: int = Field(default=0, description="Non-success calls, client cancellations excluded.")
+    error_rate: float = 0.0
+    cost: float = 0.0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    reasoning_tokens: int = 0
+    by_status: dict[str, int] = Field(default_factory=dict)
+
+
+class DeploymentInfo(BaseModel):
+    """One deployment as the catalog sees it — config only, never credentials."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    deployment: str
+    model: str | None = None
+    hosting_provider: str = ""
+    api_provider: str = ""
+    status: str = ""
+    priority: int = 1
+    provider_model_id: str | None = Field(default=None, description="What actually goes upstream; the name is a label.")
+    region: str = ""
+    extra_body: dict[str, Any] = Field(default_factory=dict)
+    max_output_tokens: int | None = None
+    input_token_price: float | None = Field(default=None, description="USD/1M override; None inherits the model price.")
+    output_token_price: float | None = None
+    input_cache_price: float | None = None
+    last_error: str | None = None
+    status_since: datetime | None = None
+
+
+class UsageSample(BaseModel):
+    """One call as it happened, successes included when asked for."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    created_at: datetime
+    status: str
+    detail: str = ""
+    model: str | None = None
+    api_key: str | None = None
+    deployment: str | None = None
+    operation: str = ""
+    request_type: str = ""
+    duration_ms: int = 0
+    ttft_ms: int | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    reasoning_tokens: int = 0
+    finish_reason: str = ""
+    route: list[dict[str, Any]] | None = Field(default=None, description="Route trace: aliases, fallbacks, retries.")
+    request_preview: dict[str, Any] | None = None
+    replayable: bool = False
+
+
 class StoredPayload(BaseModel):
     """The request body of a failed call, ready to POST back at ``endpoint``.
 

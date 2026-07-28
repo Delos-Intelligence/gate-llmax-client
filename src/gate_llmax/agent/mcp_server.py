@@ -5,7 +5,9 @@ Two kinds of tools, and the difference matters:
 * **Free** — gateway metadata, no model ever runs, safe to call as often as you like:
   ``ping``, ``list_models``, ``list_plans``, ``model_plan_matrix``, ``plan_models``,
   ``model_in_plan``, ``prefer_list``, ``resolve``, ``heavy_test_cases``, ``verify_probes``,
-  ``list_api_keys``, ``usage_errors``, ``usage_error_samples``, ``get_request_payload``.
+  ``list_api_keys``, ``usage_errors``, ``usage_error_samples``, ``get_request_payload``,
+  ``usage_latency``, ``usage_timeseries``, ``usage_stats``, ``list_deployments``,
+  ``usage_samples``.
 * **Spends real money and quota** — ``heavy_test`` and ``verify_profile``. The first hammers a
   model with the shapes it claims to serve; the second probes whether those claims are right.
   Never reach for either to check the gateway is up or that a model exists — that is what
@@ -23,9 +25,10 @@ Run it with ``gate-llmax agent mcp`` (stdio). Requires the ``agent`` extra: ``pi
 from __future__ import annotations
 
 from collections import Counter
+from datetime import UTC, datetime
 from typing import Any
 
-from gate_llmax.agent import credentials
+from gate_llmax.agent import credentials, lookup
 from gate_llmax.agent.heavy_test import (
     DEFAULT_BUDGET_SECONDS,
     DEFAULT_MAX_CONCURRENCY,
@@ -38,6 +41,7 @@ from gate_llmax.agent.heavy_test import (
 from gate_llmax.agent.prefer import build_prefer_list
 from gate_llmax.client import LLMClient
 from gate_llmax.exceptions import LLMAuthError, LLMError
+from gate_llmax.models.config import ModelInfo, ResolvedDeployment
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -115,21 +119,33 @@ async def ping() -> dict[str, Any]:
 
 
 @mcp.tool()
-async def list_models(purpose: str | None = None) -> list[dict[str, Any]]:
-    """Free. List models registered on the gateway (id, name, purpose, capabilities, prices).
+async def list_models(purpose: str | None = None, search: str | None = None) -> dict[str, Any]:
+    """Free. Model names on the gateway, grouped by purpose then developer. Names only — call ``resolve`` for one model's details.
 
-    Pass ``purpose`` (chat, embed, audio, vision, images, tts, audio_isolation, dubbing, video)
-    to filter. Metadata only — no model is called. Works with any API key.
+    Args:
+        purpose: keep one purpose (chat, embed, audio, vision, images, tts, audio_isolation, dubbing, video).
+        search: keep names matching these words, closest first (``opus``, ``gemini flash``).
+
+    Works with any API key; no model is called.
     """
     try:
         async with _client() as client:
             models = await client.list_models()
     except LLMError as exc:
-        return [{"error": _dev_error(exc)}]
-    rows = [m.model_dump(mode="json") for m in models]
+        return {"error": _dev_error(exc)}
     if purpose:
-        rows = [r for r in rows if r.get("purpose") == purpose]
-    return rows
+        models = [m for m in models if m.purpose.value == purpose]
+    if search:
+        kept = set(lookup.search(search, [m.name for m in models]))
+        models = [m for m in models if m.name in kept]
+    grouped: dict[str, dict[str, list[str]]] = {}
+    for model in models:
+        developers = grouped.setdefault(model.purpose.value, {})
+        developers.setdefault(lookup.developer_of(model.name, model.developer_id), []).append(model.name)
+    for developers in grouped.values():
+        for names in developers.values():
+            names.sort()
+    return {"count": len(models), "models": {p: dict(sorted(d.items())) for p, d in sorted(grouped.items())}}
 
 
 @mcp.tool()
@@ -158,7 +174,7 @@ async def model_plan_matrix(purpose: str | None = None) -> list[dict[str, Any]]:
             rows = await client.model_plan_matrix()
     except LLMError as exc:
         return [{"error": _dev_error(exc)}]
-    out = [r.model_dump(mode="json") for r in rows]
+    out = [r.model_dump(mode="json", exclude={"model_id"}) for r in rows]
     if purpose:
         out = [r for r in out if r.get("purpose") == purpose]
     return out
@@ -183,16 +199,17 @@ async def plan_models(plan_id: str, purpose: str | None = None) -> dict[str, Any
 async def model_in_plan(model: str, plan_id: str) -> dict[str, Any]:
     """Free. Answer: is ``model`` reachable on ``plan_id``? Returns the model's full plan set too.
 
-    Needs a **dev** API key. Match is on the model's registered name (case-insensitive).
+    Needs a **dev** API key. ``model`` is matched loosely, as in ``resolve``.
     """
     try:
         async with _client() as client:
             rows = await client.model_plan_matrix()
     except LLMError as exc:
         return {"error": _dev_error(exc)}
-    row = next((r for r in rows if r.model_name.lower() == model.lower()), None)
+    found = lookup.pick(model, [r.model_name for r in rows])
+    row = next((r for r in rows if r.model_name == found.name), None)
     if row is None:
-        return {"model": model, "plan_id": plan_id, "found": False, "available": False, "available_plan_ids": []}
+        return {"model": model, "plan_id": plan_id, "found": False, "available": False, "closest": found.candidates}
     return {
         "model": row.model_name,
         "plan_id": plan_id,
@@ -242,19 +259,73 @@ async def prefer_list(
     }
 
 
+def _deployment_line(dep: ResolvedDeployment) -> str:
+    """One deployment as a single line: name, host, region, priority, status."""
+    where = "/".join(p for p in (dep.hosting_provider, dep.region, dep.country) if p)
+    parts = [dep.name, f"@ {where}" if where else "", f"({dep.api_provider})", f"p{dep.priority}", dep.status]
+    line = " ".join(p for p in parts if p)
+    return f"{line} — {dep.last_error}" if dep.last_error else line
+
+
+def _model_details(info: ModelInfo | None) -> dict[str, Any]:
+    """Prices, capabilities and dates of a model, with empty fields left out."""
+    if info is None:
+        return {}
+    supports = [k.removeprefix("supports_") for k, v in info.capabilities.model_dump().items() if v]
+    out: dict[str, Any] = {
+        "developer": lookup.developer_of(info.name, info.developer_id),
+        "supports": supports,
+        "usd_per_mtok": {"in": info.input_token_price, "out": info.output_token_price, "cached_in": info.input_cache_price},
+        "max_tries": info.max_tries,
+        "timeout": info.timeout,
+        "created": lookup.short_date(info.created_at),
+        "updated": lookup.short_date(info.updated_at),
+    }
+    if info.max_output_tokens:
+        out["max_output_tokens"] = info.max_output_tokens
+    if info.extra_attributes:
+        out["extra_attributes"] = info.extra_attributes
+    return {k: v for k, v in out.items() if v is not None}
+
+
 @mcp.tool()
 async def resolve(model: str, plan: str | None = None) -> dict[str, Any]:
-    """Free. Preview what a chat call to ``model`` (optionally under ``plan``) would route to.
+    """Free. What a call to ``model`` would route to, plus that model's prices and capabilities. The way to look a model up.
 
-    Returns the resolved model and its candidate deployments without making a call — use it to
-    confirm a model actually has a deployment under a plan. Works with any API key.
+    ``model`` need not be exact: ``opus 5`` finds ``claude-5-opus``. Too vague a query returns the
+    three closest names instead of a resolution. Nothing is called, so this is free; any API key works.
+
+    Args:
+        model: registered name, alias, or a few words of one.
+        plan: hosting plan to route under — deployments outside it are dropped from ``deployments``.
     """
     try:
         async with _client() as client:
-            resolved = await client.resolve(model, plan=plan)
+            catalogue = await client.list_models()
+            found = lookup.pick(model, [m.name for m in catalogue])
+            if found.name is None and found.ambiguous:
+                return {"query": model, "ambiguous": found.candidates, "hint": "several models match — resolve one of these names"}
+            if found.name is None:
+                return {"query": model, "found": False, "closest": found.candidates}
+            resolved = await client.resolve(found.name, plan=plan)
     except LLMError as exc:
         return {"error": _dev_error(exc)}
-    return resolved.model_dump(mode="json")
+
+    info = next((m for m in catalogue if m.name == resolved.resolved_model), None)
+    out: dict[str, Any] = {"model": resolved.resolved_model, "purpose": resolved.purpose.value}
+    if found.name and found.name.lower() != model.lower():
+        out["matched_query"] = model
+    if resolved.redirect_from:
+        out["alias_of"] = resolved.redirect_from
+    out |= _model_details(info)
+    out["routing"] = resolved.selection_strategy
+    out["deployments"] = [_deployment_line(d) for d in resolved.candidates]
+    unroutable = [_deployment_line(d) for d in resolved.all_deployments if d.status != "ACTIVE"]
+    if unroutable:
+        out["unroutable"] = unroutable
+    if not resolved.candidates:
+        out["warning"] = "no routable deployment — a call to this model would fail"
+    return out
 
 
 @mcp.tool()
@@ -552,6 +623,327 @@ async def get_request_payload(log_id: str) -> dict[str, Any]:
             return (await client.usage_payload(log_id)).model_dump(mode="json")
     except LLMError as exc:
         return {"error": _dev_error(exc)}
+
+
+def _short_ts(value: datetime) -> str:
+    """``2026-07-28T09:18:50+00:00`` → ``07-28 09:18`` (UTC; windows are ≤90 days, the year is noise)."""
+    return value.astimezone(UTC).strftime("%m-%d %H:%M")
+
+
+def _lean(row: dict[str, Any]) -> dict[str, Any]:
+    """Drop None / empty fields — in these tools' output, absent always means zero or none."""
+    return {k: v for k, v in row.items() if v is not None and v not in ("", {}, [])}
+
+
+@mcp.tool()
+async def usage_latency(
+    since: str = "7d",
+    group: str = "model",
+    models: list[str] | None = None,
+    deployments: list[str] | None = None,
+    hosting_providers: list[str] | None = None,
+    statuses: list[str] | None = None,
+    buckets: list[int] | None = None,
+    min_calls: int = 1,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Free. TTFT/duration percentiles and decode speed per model or deployment, busiest first.
+
+    The tool for "is X slow" and "who serves X fastest": compare models or deployments over a
+    window, on successful calls by default. Pass ``buckets`` (input-token edges, e.g.
+    ``[2000, 20000]``) to split each group by prompt size — a high TTFT on tiny prompts is
+    upstream queueing, one that grows with size is prefill.
+
+    Args:
+        since: Duration (``7d``, ``24h``) or ISO timestamp. Max 90 days.
+        group: ``model`` or ``deployment``.
+        models: Model names to keep (unknown name = error, not empty result).
+        deployments: Deployment names to keep.
+        hosting_providers: Hosting provider ids to keep, e.g. ``["openrouter"]``.
+        statuses: Statuses to aggregate; default SUCCESS only.
+        buckets: Ascending input-token edges splitting each group by prompt size.
+        min_calls: Hide groups with fewer calls.
+        limit: Maximum rows.
+
+    Returns:
+        Rows with calls, avg_in/avg_out tokens, ttft_p50/p90/p99 and dur_p50/p90 (ms), and
+        tok_s (decode tokens/second). Absent field = none. Needs a **dev** key.
+    """
+    try:
+        async with _client() as client:
+            rows = await client.usage_latency(
+                since=since,
+                group=group,
+                models=models,
+                deployments=deployments,
+                hosting_providers=hosting_providers,
+                statuses=statuses,
+                buckets=buckets,
+                min_calls=min_calls,
+                limit=limit,
+            )
+    except LLMError as exc:
+        return [{"error": _dev_error(exc)}]
+    return [
+        _lean(
+            {
+                "model": r.model,
+                "deployment": r.deployment,
+                "bucket": r.bucket,
+                "calls": r.calls,
+                "avg_in": r.avg_input,
+                "avg_out": r.avg_output,
+                "ttft_p50": r.ttft_p50,
+                "ttft_p90": r.ttft_p90,
+                "ttft_p99": r.ttft_p99,
+                "dur_p50": r.dur_p50,
+                "dur_p90": r.dur_p90,
+                "tok_s": r.decode_tps,
+            }
+        )
+        for r in rows
+    ]
+
+
+@mcp.tool()
+async def usage_timeseries(
+    since: str = "24h",
+    interval: str = "1h",
+    models: list[str] | None = None,
+    deployments: list[str] | None = None,
+    hosting_providers: list[str] | None = None,
+    keys: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Free. Calls, failures, median TTFT and cost per time bucket — when did it change.
+
+    The tool for "did it start at 09:15" and "is it getting worse": one row per ``interval``
+    bucket over the window. Client cancellations are not counted as failures.
+
+    Args:
+        since: Duration or ISO timestamp. Max 90 days.
+        interval: Bucket width — ``5m``, ``1h``, ``1d``. Window is capped at 500 buckets.
+        models: Model names to keep.
+        deployments: Deployment names to keep.
+        hosting_providers: Hosting provider ids to keep.
+        keys: API key **names** to keep (see ``list_api_keys``).
+
+    Returns:
+        Rows ``{t: "MM-DD HH:MM" (UTC), calls, fail, ttft_p50, in_tok, out_tok, cost}``.
+        Absent field = zero. Needs a **dev** key.
+    """
+    try:
+        async with _client() as client:
+            points = await client.usage_timeseries(
+                since=since,
+                interval=interval,
+                models=models,
+                deployments=deployments,
+                hosting_providers=hosting_providers,
+                keys=keys,
+            )
+    except LLMError as exc:
+        return [{"error": _dev_error(exc)}]
+    return [
+        _lean(
+            {
+                "t": _short_ts(p.t),
+                "calls": p.calls,
+                "fail": p.failures or None,
+                "ttft_p50": p.ttft_p50,
+                "in_tok": p.input_tokens or None,
+                "out_tok": p.output_tokens or None,
+                "cost": round(p.cost, 4) or None,
+            }
+        )
+        for p in points
+    ]
+
+
+@mcp.tool()
+async def usage_stats(
+    since: str = "24h",
+    group: str = "model",
+    models: list[str] | None = None,
+    keys: list[str] | None = None,
+    operations: list[str] | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Free. Volume, error rate and spend per model, key or operation — busiest first.
+
+    The denominators ``usage_errors`` lacks: "22 failures" only matters next to "of how many
+    calls". ``err_rate`` excludes client cancellations; ``by_status`` shows every non-success
+    status including those.
+
+    Args:
+        since: Duration or ISO timestamp. Max 90 days.
+        group: ``model``, ``key`` or ``operation``.
+        models: Model names to keep.
+        keys: API key **names** to keep.
+        operations: ``operation`` tags to keep.
+        limit: Maximum rows.
+
+    Returns:
+        Rows ``{name, calls, fail, err_rate, cost, in_tok, out_tok, reason_tok, by_status}``.
+        Absent field = zero. Needs a **dev** key.
+    """
+    try:
+        async with _client() as client:
+            rows = await client.usage_stats(since=since, group=group, models=models, keys=keys, operations=operations, limit=limit)
+    except LLMError as exc:
+        return [{"error": _dev_error(exc)}]
+    return [
+        _lean(
+            {
+                "name": r.name,
+                "calls": r.calls,
+                "fail": r.failures or None,
+                "err_rate": r.error_rate or None,
+                "cost": round(r.cost, 4) or None,
+                "in_tok": r.input_tokens or None,
+                "out_tok": r.output_tokens or None,
+                "reason_tok": r.reasoning_tokens or None,
+                "by_status": r.by_status or None,
+            }
+        )
+        for r in rows
+    ]
+
+
+@mcp.tool()
+async def list_deployments(
+    models: list[str] | None = None,
+    hosting_providers: list[str] | None = None,
+    statuses: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Free. Deployment configuration + health, by name — what the catalog routes to and how.
+
+    Read-only and secret-free: shows ``provider_model_id`` (what actually goes upstream),
+    ``extra_body`` (per-deployment request overrides, e.g. an OpenRouter sub-provider pin),
+    price/output-token overrides, and health (status, last_error, since when — shown for
+    non-ACTIVE deployments).
+
+    Args:
+        models: Model names to keep.
+        hosting_providers: Hosting provider ids to keep, e.g. ``["openrouter"]``.
+        statuses: Deployment statuses to keep, e.g. ``["ERROR"]``.
+
+    Returns:
+        One row per deployment, sorted by model then priority. Absent field = none/inherited.
+        Needs a **dev** key.
+    """
+    try:
+        async with _client() as client:
+            rows = await client.list_deployments(models=models, hosting_providers=hosting_providers, statuses=statuses)
+    except LLMError as exc:
+        return [{"error": _dev_error(exc)}]
+    return [
+        _lean(
+            {
+                "deployment": r.deployment,
+                "model": r.model,
+                "hosting": r.hosting_provider,
+                "status": r.status,
+                "priority": r.priority,
+                "provider_model_id": r.provider_model_id,
+                "region": r.region or None,
+                "extra_body": r.extra_body or None,
+                "max_out": r.max_output_tokens,
+                "price_in": r.input_token_price,
+                "price_out": r.output_token_price,
+                "price_cache": r.input_cache_price,
+                "last_error": r.last_error,
+                "since": _short_ts(r.status_since) if r.status_since and r.status != "ACTIVE" else None,
+            }
+        )
+        for r in rows
+    ]
+
+
+@mcp.tool()
+async def usage_samples(
+    since: str = "24h",
+    keys: list[str] | None = None,
+    models: list[str] | None = None,
+    deployments: list[str] | None = None,
+    statuses: list[str] | None = None,
+    operations: list[str] | None = None,
+    search: str | None = None,
+    min_ttft_ms: int | None = None,
+    min_duration_ms: int | None = None,
+    limit: int = 20,
+    *,
+    include_route: bool = False,
+    include_preview: bool = False,
+    replayable_only: bool = False,
+) -> list[dict[str, Any]]:
+    """Free. Individual calls with their timings, newest first — successes included on demand.
+
+    ``usage_error_samples`` generalized: ``statuses=["SUCCESS"], min_ttft_ms=8000`` shows the
+    actual slow calls behind a bad percentile; ``include_route=True`` attaches the route trace
+    (aliases, fallbacks, retries) that explains where the time went.
+
+    Args:
+        since: Duration or ISO timestamp. Max 90 days.
+        keys: API key **names** to keep.
+        models: Model names to keep.
+        deployments: Deployment names to keep.
+        statuses: Statuses to keep — ``SUCCESS`` allowed; default is all failures.
+        operations: ``operation`` tags to keep.
+        search: Substring the error message must contain.
+        min_ttft_ms: Keep calls whose time-to-first-token was at least this.
+        min_duration_ms: Keep calls that took at least this long overall.
+        include_route: Attach the route trace.
+        include_preview: Attach the stripped request preview.
+        replayable_only: Keep only calls whose request body was captured.
+        limit: Maximum rows (max 200).
+
+    Returns:
+        Rows with ``at`` (UTC), status, names, timings and tokens; ``id`` only when the call is
+        replayable via ``get_request_payload``. Absent field = zero/none. Needs a **dev** key.
+    """
+    try:
+        async with _client() as client:
+            samples = await client.usage_samples(
+                since=since,
+                keys=keys,
+                models=models,
+                deployments=deployments,
+                statuses=statuses,
+                operations=operations,
+                search=search,
+                min_ttft_ms=min_ttft_ms,
+                min_duration_ms=min_duration_ms,
+                include_route=include_route,
+                include_preview=include_preview,
+                replayable_only=replayable_only,
+                limit=limit,
+            )
+    except LLMError as exc:
+        return [{"error": _dev_error(exc)}]
+    return [
+        _lean(
+            {
+                "at": _short_ts(s.created_at),
+                "status": s.status,
+                "detail": s.detail or None,
+                "model": s.model,
+                "key": s.api_key,
+                "deployment": s.deployment,
+                "op": s.operation or None,
+                "type": s.request_type or None,
+                "dur_ms": s.duration_ms or None,
+                "ttft_ms": s.ttft_ms,
+                "in_tok": s.input_tokens or None,
+                "out_tok": s.output_tokens or None,
+                "reason_tok": s.reasoning_tokens or None,
+                "finish": s.finish_reason or None,
+                "route": s.route,
+                "preview": s.request_preview,
+                "id": s.id if s.replayable else None,
+            }
+        )
+        for s in samples
+    ]
 
 
 def main() -> None:

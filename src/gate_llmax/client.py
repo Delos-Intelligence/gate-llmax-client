@@ -33,7 +33,17 @@ from gate_llmax.models.response import (
 )
 from gate_llmax.models.responses import ResponsesRequest, ResponsesResponse
 from gate_llmax.models.tts import TTSFormat, TTSRequest, TTSResponse
-from gate_llmax.models.usage import ApiKeyName, ErrorReport, ErrorSample, StoredPayload
+from gate_llmax.models.usage import (
+    ApiKeyName,
+    DeploymentInfo,
+    ErrorReport,
+    ErrorSample,
+    LatencyRow,
+    StatsRow,
+    StoredPayload,
+    TimeseriesPoint,
+    UsageSample,
+)
 from gate_llmax.models.video import VideoAspectRatio, VideoDuration, VideoRequest, VideoResolution, VideoResponse
 from gate_llmax.models.vision import VisionOCRRequest
 from gate_llmax.ratelimit import RateLimit, RateLimiter
@@ -847,6 +857,148 @@ class LLMClient:
         response = await self._http.get(f"/v1/usage/payload/{log_id}")
         _raise_for_status(response)
         return StoredPayload.model_validate(response.json())
+
+    async def usage_latency(
+        self,
+        *,
+        since: str = "7d",
+        group: str = "model",
+        models: list[str] | None = None,
+        deployments: list[str] | None = None,
+        hosting_providers: list[str] | None = None,
+        statuses: list[str] | None = None,
+        buckets: list[int] | None = None,
+        min_calls: int = 1,
+        limit: int = 50,
+    ) -> list[LatencyRow]:
+        """GET /v1/usage/latency — TTFT/duration percentiles and decode speed per model or deployment.
+
+        ``buckets`` are input-token edges (``[2000, 20000]``) that split each group by prompt
+        size — the way to tell queueing from prompt processing. Requires a ``dev`` API key.
+        """
+        params: list[tuple[str, str | int | float | None]] = [("since", since), ("group", group), ("limit", limit)]
+        params += [("model", m) for m in models or []]
+        params += [("deployment", d) for d in deployments or []]
+        params += [("hosting_provider", h) for h in hosting_providers or []]
+        params += [("status", s) for s in statuses or []]
+        if buckets:
+            params.append(("buckets", ",".join(str(b) for b in buckets)))
+        if min_calls > 1:
+            params.append(("min_calls", min_calls))
+        response = await self._http.get("/v1/usage/latency", params=params)
+        _raise_for_status(response)
+        return [LatencyRow.model_validate(item) for item in response.json()]
+
+    async def usage_timeseries(
+        self,
+        *,
+        since: str = "24h",
+        interval: str = "1h",
+        models: list[str] | None = None,
+        deployments: list[str] | None = None,
+        hosting_providers: list[str] | None = None,
+        keys: list[str] | None = None,
+    ) -> list[TimeseriesPoint]:
+        """GET /v1/usage/timeseries — calls, failures, median TTFT and cost per time bucket.
+
+        ``interval`` is the bucket width (``5m``, ``1h``, ``1d``); the window is capped at 500
+        buckets. Requires a ``dev`` API key.
+        """
+        params: list[tuple[str, str | int | float | None]] = [("since", since), ("interval", interval)]
+        params += [("model", m) for m in models or []]
+        params += [("deployment", d) for d in deployments or []]
+        params += [("hosting_provider", h) for h in hosting_providers or []]
+        params += [("key", k) for k in keys or []]
+        response = await self._http.get("/v1/usage/timeseries", params=params)
+        _raise_for_status(response)
+        return [TimeseriesPoint.model_validate(item) for item in response.json()]
+
+    async def usage_stats(
+        self,
+        *,
+        since: str = "24h",
+        group: str = "model",
+        models: list[str] | None = None,
+        keys: list[str] | None = None,
+        operations: list[str] | None = None,
+        limit: int = 50,
+    ) -> list[StatsRow]:
+        """GET /v1/usage/stats — volume, error rate and spend per model, key or operation.
+
+        The denominators ``usage_errors`` lacks: total calls next to failures. Requires a
+        ``dev`` API key.
+        """
+        params: list[tuple[str, str | int | float | None]] = [("since", since), ("group", group), ("limit", limit)]
+        params += [("model", m) for m in models or []]
+        params += [("key", k) for k in keys or []]
+        params += [("operation", o) for o in operations or []]
+        response = await self._http.get("/v1/usage/stats", params=params)
+        _raise_for_status(response)
+        return [StatsRow.model_validate(item) for item in response.json()]
+
+    async def list_deployments(
+        self,
+        *,
+        models: list[str] | None = None,
+        hosting_providers: list[str] | None = None,
+        statuses: list[str] | None = None,
+    ) -> list[DeploymentInfo]:
+        """GET /v1/usage/deployments — deployment configuration + health by name; no ids, no secrets.
+
+        Requires a ``dev`` API key.
+        """
+        params: list[tuple[str, str | int | float | None]] = []
+        params += [("model", m) for m in models or []]
+        params += [("hosting_provider", h) for h in hosting_providers or []]
+        params += [("status", s) for s in statuses or []]
+        response = await self._http.get("/v1/usage/deployments", params=params)
+        _raise_for_status(response)
+        return [DeploymentInfo.model_validate(item) for item in response.json()]
+
+    async def usage_samples(
+        self,
+        *,
+        since: str = "24h",
+        keys: list[str] | None = None,
+        models: list[str] | None = None,
+        deployments: list[str] | None = None,
+        statuses: list[str] | None = None,
+        operations: list[str] | None = None,
+        search: str | None = None,
+        min_ttft_ms: int | None = None,
+        min_duration_ms: int | None = None,
+        include_route: bool = False,
+        include_preview: bool = False,
+        replayable_only: bool = False,
+        limit: int = 20,
+    ) -> list[UsageSample]:
+        """GET /v1/usage/samples — individual calls with timings, newest first; successes included on demand.
+
+        ``usage_error_samples`` generalized: pass ``statuses=["SUCCESS"]`` with ``min_ttft_ms``
+        to inspect slow successful calls, ``include_route=True`` for the retry/fallback trace.
+        Requires a ``dev`` API key.
+        """
+        params: list[tuple[str, str | int | float | None]] = [("since", since), ("limit", limit)]
+        params += [("key", k) for k in keys or []]
+        params += [("model", m) for m in models or []]
+        params += [("deployment", d) for d in deployments or []]
+        params += [("status", s) for s in statuses or []]
+        params += [("operation", o) for o in operations or []]
+        if search:
+            params.append(("search", search))
+        if min_ttft_ms is not None:
+            params.append(("min_ttft_ms", min_ttft_ms))
+        if min_duration_ms is not None:
+            params.append(("min_duration_ms", min_duration_ms))
+        if include_route:
+            params.append(("include_route", "true"))
+        if include_preview:
+            params.append(("include_preview", "true"))
+        if replayable_only:
+            params.append(("replayable_only", "true"))
+        response = await self._http.get("/v1/usage/samples", params=params)
+        _raise_for_status(response)
+        return [UsageSample.model_validate(item) for item in response.json()]
 
     async def model_plan_matrix(self) -> list[ModelPlanRow]:
         """GET /v1/model-plan-matrix — every model and the plans it is reachable on.

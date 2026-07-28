@@ -45,6 +45,7 @@ class ModelInfo(BaseModel):
 
     id: str
     name: str
+    developer_id: str | None = None
     purpose: ModelPurpose = ModelPurpose.CHAT
     capabilities: ModelCapabilities
     input_token_price: float = Field(description="USD per 1M input tokens")
