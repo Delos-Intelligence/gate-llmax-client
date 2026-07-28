@@ -113,6 +113,7 @@ class StreamChunkUsage(BaseModel):
 
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    reasoning_tokens: int = 0
 
 
 class StreamChunk(BaseModel):
@@ -125,6 +126,7 @@ class StreamChunk(BaseModel):
     input_tokens: int | None = None
     output_tokens: int | None = None
     cached_input_tokens: int | None = None
+    reasoning_tokens: int | None = None
     input_cost: float | None = None
     output_cost: float | None = None
     tool_calls_delta: list[JsonDict] | None = None
@@ -161,6 +163,7 @@ class StreamChunk(BaseModel):
             return StreamChunkUsage(
                 prompt_tokens=self.input_tokens or 0,
                 completion_tokens=self.output_tokens or 0,
+                reasoning_tokens=self.reasoning_tokens or 0,
             )
         return None
 
@@ -184,6 +187,7 @@ class StreamChunk(BaseModel):
                 "prompt_tokens": self.usage.prompt_tokens,
                 "completion_tokens": self.usage.completion_tokens,
                 "total_tokens": self.usage.prompt_tokens + self.usage.completion_tokens,
+                "completion_tokens_details": {"reasoning_tokens": self.usage.reasoning_tokens},
             }
         return payload
 
@@ -213,12 +217,16 @@ class StreamChunk(BaseModel):
                 finish_reason = choice.finish_reason
 
         cached_input_tokens = None
+        reasoning_tokens = None
         if chunk.usage:
             input_tokens = getattr(chunk.usage, "prompt_tokens", None)
             output_tokens = getattr(chunk.usage, "completion_tokens", None)
             details = getattr(chunk.usage, "prompt_tokens_details", None)
             if details is not None:
                 cached_input_tokens = getattr(details, "cached_tokens", None)
+            out_details = getattr(chunk.usage, "completion_tokens_details", None)
+            if out_details is not None:
+                reasoning_tokens = getattr(out_details, "reasoning_tokens", None)
 
         return cls(
             text=text,
@@ -228,6 +236,7 @@ class StreamChunk(BaseModel):
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cached_input_tokens=cached_input_tokens,
+            reasoning_tokens=reasoning_tokens,
             tool_calls_delta=tool_calls_delta,
         )
 
