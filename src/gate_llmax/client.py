@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import hashlib
 import json
 import logging
@@ -110,6 +111,8 @@ class LLMClient:
     _default_hosting_providers: list[str] | None
     _default_plan: str | None
     _seed_routing_token: str | None
+    _operation_prefix: str
+    _derived_from: LLMClient | None
     _http: httpx.AsyncClient
     _stream_timeout: httpx.Timeout
     _owns_http: bool
@@ -192,6 +195,8 @@ class LLMClient:
         self._default_hosting_providers = default_hosting_providers
         self._default_plan = default_plan
         self._seed_routing_token = seed_to_token(seed_routing)
+        self._operation_prefix = ""
+        self._derived_from = None
         self._owns_http = httpx_aclient is None
         self._http = httpx_aclient or httpx.AsyncClient(
             base_url=self._base_url,
@@ -224,6 +229,45 @@ class LLMClient:
         """Return a shallow copy of the registered client-level usage callbacks (for inspection)."""
         return list(self._usage_callbacks)
 
+    def prefix_operation(self, prefix: str) -> Self:
+        """Return a view of this client that reports operations as ``"<prefix>/<operation>"``.
+
+        Prefixes accumulate, the call's own operation staying last:
+        ``client.prefix_operation("scribe").prefix_operation("tables").embed(operation="index")``
+        reports ``"scribe/tables/index"``. An empty prefix returns the client unchanged.
+        """
+        segment = prefix.strip("/")
+        if not segment:
+            return self
+        view = self._view()
+        view._operation_prefix = f"{self._operation_prefix}/{segment}" if self._operation_prefix else segment  # noqa: SLF001
+        return view
+
+    def with_usage_callback(self, *callbacks: UsageCallback) -> Self:
+        """Return a view of this client that also fires ``callbacks`` after every billed call.
+
+        Lets one client serve many principals: bind a per-user billing hook to a view instead of
+        rebuilding the client, or of mutating it with ``add_usage_callback`` — which would leak that
+        hook to every other caller sharing the instance.
+        """
+        view = self._view()
+        view._usage_callbacks = [*self._usage_callbacks, *callbacks]  # noqa: SLF001
+        return view
+
+    def _view(self) -> Self:
+        """A copy sharing the connection pool and rate limiter, for the ``prefix_*`` / ``with_*`` builders."""
+        view = copy.copy(self)
+        # ``_owns_http`` is dropped: the pool belongs to whoever built it, so closing a view
+        # must not close it for everyone else sharing the original.
+        vars(view).update(_usage_callbacks=list(self._usage_callbacks), _total_usage=0.0, _derived_from=self, _owns_http=False)
+        return view
+
+    def _resolve_operation(self, operation: str) -> str:
+        """Qualify a call's operation tag with the client's accumulated prefix."""
+        if not self._operation_prefix:
+            return operation
+        return f"{self._operation_prefix}/{operation}" if operation else self._operation_prefix
+
     @property
     def total_usage(self) -> float:
         """Accumulated USD cost of every billed call on this client (the end-of-run total).
@@ -240,8 +284,14 @@ class LLMClient:
         self._total_usage = 0.0
 
     def _record_usage(self, usage: RawUsage) -> None:
-        """Add one call's cost to ``total_usage`` — invoked by every builder's usage fire."""
+        """Add one call's cost to ``total_usage`` — invoked by every builder's usage fire.
+
+        A view also credits the client it came from, so the original's ``total_usage`` stays the
+        total of everything sent through it.
+        """
         self._total_usage += usage.total_cost
+        if self._derived_from is not None:
+            self._derived_from._record_usage(usage)  # noqa: SLF001
 
     def _resolve_cache_call(self, override: bool | None) -> bool | None:
         """Per-call ``cache_call`` wins when provided; else the client default (``None`` = the key's)."""
@@ -323,7 +373,7 @@ class LLMClient:
             zone_selection=self._default_zone_selection,
             hosting_providers=self._default_hosting_providers,
             plan=self._default_plan,
-            operation=operation,
+            operation=self._resolve_operation(operation),
             seed_routing=routing_token,
             cache_call=self._resolve_cache_call(cache_call),
             cache_ttl=self._resolve_cache_ttl(cache_ttl),
@@ -408,7 +458,7 @@ class LLMClient:
         request = EmbedRequest(
             model="",
             input=input,
-            operation=operation,
+            operation=self._resolve_operation(operation),
             max_tries=max_tries,
             timeout=timeout,
             cache_call=self._resolve_cache_call(cache_call),
@@ -439,7 +489,7 @@ class LLMClient:
         request = AudioRequest(
             model="",
             audio=audio_b64,
-            operation=operation,
+            operation=self._resolve_operation(operation),
             language=language,
             response_format=response_format,
             prompt=prompt,
@@ -466,7 +516,12 @@ class LLMClient:
         ``duration_seconds`` is used only for usage/billing.
         """
         request = AudioIsolationRequest(
-            model="", audio=audio_b64, operation=operation, duration_seconds=duration_seconds, max_tries=max_tries, timeout=timeout
+            model="",
+            audio=audio_b64,
+            operation=self._resolve_operation(operation),
+            duration_seconds=duration_seconds,
+            max_tries=max_tries,
+            timeout=timeout,
         )
         return self._direct_builder(request, "/v1/audio/isolation", "Audio isolation", AudioIsolationResponse)
 
@@ -493,7 +548,7 @@ class LLMClient:
             source_url=source_url,
             source_lang=source_lang,
             target_lang=target_lang,
-            operation=operation,
+            operation=self._resolve_operation(operation),
             duration_seconds=duration_seconds,
             watermark=watermark,
             max_tries=max_tries,
@@ -576,7 +631,7 @@ class LLMClient:
                 speed=speed,
                 max_tries=max_tries,
                 timeout=timeout,
-                operation=operation,
+                operation=self._resolve_operation(operation),
                 cache_call=use_cache,
                 cache_ttl=ttl,
             )
@@ -594,7 +649,7 @@ class LLMClient:
             output_format=output_format,
             max_tries=max_tries,
             timeout=timeout,
-            operation=operation,
+            operation=self._resolve_operation(operation),
             cache_call=use_cache,
             cache_ttl=ttl,
         )
@@ -648,7 +703,7 @@ class LLMClient:
             end_image=end_image,
             max_tries=max_tries,
             timeout=timeout,
-            operation=operation,
+            operation=self._resolve_operation(operation),
             cache_call=self._resolve_cache_call(cache_call),
             cache_ttl=self._resolve_cache_ttl(cache_ttl),
         )
@@ -675,7 +730,14 @@ class LLMClient:
             LLMEscapeHatchWarning,
             stacklevel=2,
         )
-        request = ResponsesRequest(model="", input=input, extra_body=extra_body, operation=operation, max_tries=max_tries, timeout=timeout)
+        request = ResponsesRequest(
+            model="",
+            input=input,
+            extra_body=extra_body,
+            operation=self._resolve_operation(operation),
+            max_tries=max_tries,
+            timeout=timeout,
+        )
         client_timeout = float(timeout) + 30.0 if timeout is not None else None
         return self._direct_builder(request, "/v1/responses", "Responses", ResponsesResponse, client_timeout=client_timeout)
 
@@ -688,7 +750,9 @@ class LLMClient:
         timeout: int | None = None,
     ) -> DirectRequestBuilder[VisionLLMResponse]:
         """Fluent builder for vision OCR; ``.call(model)`` sends it. ``images`` are base64-encoded; ``operation`` tags the usage row."""
-        request = VisionOCRRequest(model="", images=images, operation=operation, max_tries=max_tries, timeout=timeout)
+        request = VisionOCRRequest(
+            model="", images=images, operation=self._resolve_operation(operation), max_tries=max_tries, timeout=timeout
+        )
         return self._direct_builder(request, "/v1/vision/ocr", "Vision OCR", VisionLLMResponse)
 
     def image(
@@ -735,7 +799,7 @@ class LLMClient:
             partial_images=partial_images,
             max_tries=max_tries,
             timeout=timeout,
-            operation=operation,
+            operation=self._resolve_operation(operation),
             cache_call=self._resolve_cache_call(cache_call),
             cache_ttl=self._resolve_cache_ttl(cache_ttl),
         )
