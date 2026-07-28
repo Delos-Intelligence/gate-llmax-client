@@ -67,6 +67,7 @@ GATEWAY_MAX_BUDGET = 630.0
 CLIENT_MARGIN = 30.0
 DEFAULT_TIMEOUT = GATEWAY_MAX_BUDGET + CLIENT_MARGIN
 MEDIA_CLIENT_TIMEOUT = 630.0  # dubbing/video are long-running; outlast the server-side wait
+VERIFY_CLIENT_TIMEOUT = 900.0  # a capability verification is dozens of live probes per endpoint
 
 CONNECT_TIMEOUT = 10.0
 POOL_TIMEOUT = 10.0
@@ -746,6 +747,34 @@ class LLMClient:
         response = await self._http.get("/v1/plans")
         _raise_for_status(response)
         return [PlanInfo.model_validate(item) for item in response.json()]
+
+    async def verify_profile(
+        self,
+        model: str,
+        *,
+        only: list[str] | None = None,
+        every_replica: bool = False,
+        include_parked: bool = False,
+    ) -> JsonDict:
+        """POST /v1/verify/chat/{model} — what each endpoint really accepts, against what the catalog claims.
+
+        Requires a ``dev`` API key (403 otherwise). Every probe is one live completion, so this spends money.
+        """
+        payload = {"only": only or [], "every_replica": every_replica, "include_parked": include_parked}
+        try:
+            response = await self._http.post(f"/v1/verify/chat/{model}", json=payload, timeout=VERIFY_CLIENT_TIMEOUT)
+        except httpx.TimeoutException as exc:
+            raise LLMTimeoutError(f"Verification of {model!r} timed out: {exc}") from exc
+        except httpx.ConnectError as exc:
+            raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
+        _raise_for_status(response)
+        return response.json()
+
+    async def verify_probes(self) -> list[JsonDict]:
+        """GET /v1/verify/probes — the probe catalogue a verification runs. Requires a ``dev`` API key."""
+        response = await self._http.get("/v1/verify/probes")
+        _raise_for_status(response)
+        return response.json()
 
     async def list_api_key_names(self) -> list[ApiKeyName]:
         """GET /v1/usage/keys — every API key name. Requires a ``dev`` API key (403 otherwise).

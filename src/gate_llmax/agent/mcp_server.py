@@ -4,11 +4,12 @@ Two kinds of tools, and the difference matters:
 
 * **Free** — gateway metadata, no model ever runs, safe to call as often as you like:
   ``ping``, ``list_models``, ``list_plans``, ``model_plan_matrix``, ``plan_models``,
-  ``model_in_plan``, ``prefer_list``, ``resolve``, ``heavy_test_cases``, ``list_api_keys``,
-  ``usage_errors``, ``usage_error_samples``, ``get_request_payload``.
-* **Spends real money and quota** — ``heavy_test`` only. It is the deliberate "actually exercise
-  this model" tool: it fires ``n x cases`` real requests at a chat model. Never reach for it to
-  check the gateway is up or that a model exists — that is what ``ping`` and ``resolve`` are for.
+  ``model_in_plan``, ``prefer_list``, ``resolve``, ``heavy_test_cases``, ``verify_probes``,
+  ``list_api_keys``, ``usage_errors``, ``usage_error_samples``, ``get_request_payload``.
+* **Spends real money and quota** — ``heavy_test`` and ``verify_profile``. The first hammers a
+  model with the shapes it claims to serve; the second probes whether those claims are right.
+  Never reach for either to check the gateway is up or that a model exists — that is what
+  ``ping`` and ``resolve`` are for.
 
 Config comes from the environment, falling back to the file ``gate-llmax agent install`` writes:
     GATE_BASE_URL   base URL of the Gate gateway (e.g. https://gate.example.com)
@@ -21,6 +22,7 @@ Run it with ``gate-llmax agent mcp`` (stdio). Requires the ``agent`` extra: ``pi
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 from gate_llmax.agent import credentials
@@ -329,6 +331,85 @@ async def heavy_test(
             )
     except LLMError as exc:
         return {"error": _dev_error(exc)}
+
+
+def _verify_digest(profile: dict[str, Any]) -> dict[str, Any]:
+    """Keep the features whose verdict is not plain ``ok`` — the rest is noise once a run passes."""
+    return {
+        "model": profile.get("model"),
+        "declared": profile.get("declared"),
+        "endpoints": [f"{e['hosting_provider']} ({e['name']})" for e in profile.get("endpoints", [])],
+        "verdict_counts": dict(Counter(dim["verdict"] for dim in profile.get("dimensions", []))),
+        "needs_attention": [dim for dim in profile.get("dimensions", []) if dim.get("verdict") != "ok"],
+        "proposals": profile.get("proposals"),
+        "code_findings": profile.get("code_findings"),
+        "cost_usd": profile.get("cost_usd"),
+        "duration_s": profile.get("duration_s"),
+    }
+
+
+@mcp.tool()
+async def verify_probes() -> list[dict[str, Any]]:
+    """Free. List the capability probes ``verify_profile`` runs (id, dimension, intent, the flag each speaks to).
+
+    Use it to pick an ``only=[...]`` subset before spending money. Needs a dev key but calls no model.
+    """
+    try:
+        async with _client() as client:
+            return await client.verify_probes()
+    except LLMError as exc:
+        return [{"error": _dev_error(exc)}]
+
+
+@mcp.tool()
+async def verify_profile(
+    model: str,
+    only: list[str] | None = None,
+    *,
+    every_replica: bool = False,
+    include_parked: bool = False,
+    full: bool = False,
+) -> dict[str, Any]:
+    """SPENDS REAL MONEY. Probe what a chat model's endpoints really accept, and diff it against the catalog.
+
+    Answers "do we restrict this model too much, or not enough?". For every feature — images,
+    multi-image, tools, forced/parallel tool calls, tools+reasoning, each reasoning effort level,
+    JSON object/schema mode, temperature, top_p, stop, n, seed, penalties, logprobs,
+    prompt_cache_key, truncation — it works out what Gate would do to the request, then finds out
+    whether it had to:
+
+    - ``ok`` — Gate forwards it and the endpoint honours it.
+    - ``over_restricted`` — Gate narrows or blocks it, but the endpoint accepts it.
+    - ``under_restricted`` / ``not_honoured`` — Gate forwards it, the endpoint refuses or ignores it.
+    - ``restriction_ok`` — Gate narrows it and the endpoint refuses it too.
+    - ``unverifiable`` — Gate narrows it and this adapter offers no way to send it anyway.
+
+    Restrictions living in the catalog (``supports_images`` / ``supports_tools`` /
+    ``supports_reasoning`` / ``reasoning_efforts``) come back as ``proposals``: exact column writes
+    an admin can apply from the dashboard. Restrictions living in Gate's own code come back as
+    ``code_findings`` instead — no catalog write fixes those, they need a patch. This tool never
+    writes anything.
+
+    **Costs real money**: one live completion per probe per endpoint (~25 probes, so a few tenths
+    of a cent and about a minute per hosting provider). ``verify_probes`` lists them for free.
+
+    Args:
+        model: chat model name as registered on the gateway.
+        only: restrict to these probe ids or dimensions (e.g. ``["images", "reasoning_efforts"]``).
+        every_replica: probe every deployment instead of one per hosting provider.
+        include_parked: probe non-ACTIVE deployments too.
+        full: return every probe run, not just the features needing attention.
+
+    Returns:
+        The per-feature verdicts that are not ``ok``, the proposed catalog writes, the code-level
+        findings, and what the run cost. Needs a **dev** API key.
+    """
+    try:
+        async with _client() as client:
+            profile = await client.verify_profile(model, only=only, every_replica=every_replica, include_parked=include_parked)
+    except LLMError as exc:
+        return {"error": _dev_error(exc)}
+    return profile if full else _verify_digest(profile)
 
 
 # ---------------------------------------------------------------------------
