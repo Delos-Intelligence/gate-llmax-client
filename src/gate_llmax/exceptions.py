@@ -31,6 +31,10 @@ class LLMContentFilterError(LLMError):
     """Raised when the upstream safety/content filter rejected the prompt (HTTP 400)."""
 
 
+class LLMContextOverflowError(LLMError):
+    """Raised when the prompt exceeds the model's context window (HTTP 413)."""
+
+
 class LLMServerError(LLMError):
     """Raised for unexpected 5xx responses from the gateway."""
 

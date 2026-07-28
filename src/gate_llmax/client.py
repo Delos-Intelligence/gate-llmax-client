@@ -54,6 +54,7 @@ from .exceptions import (
     LLMCapabilityError,
     LLMConnectionError,
     LLMContentFilterError,
+    LLMContextOverflowError,
     LLMEscapeHatchWarning,
     LLMModelNotFoundError,
     LLMServerError,
@@ -1341,6 +1342,8 @@ def _raise_for_status(response: httpx.Response) -> None:
         raise LLMModelNotFoundError(_extract_detail(response.text))
     if code == 400:
         raise LLMContentFilterError(_extract_detail(response.text))
+    if code == 413:
+        raise LLMContextOverflowError(_extract_detail(response.text))
     if code == 422:
         raise LLMCapabilityError(_extract_detail(response.text))
     if code >= 500:
