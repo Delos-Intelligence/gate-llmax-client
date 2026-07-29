@@ -27,9 +27,11 @@ class OutputStatus(StrEnum):
 
 
 class ReasoningEffort(StrEnum):
-    """Reasoning effort level for models that support extended thinking."""
+    """Reasoning effort level for models that support extended thinking, cheapest first."""
 
+    NONE = "none"
     MINIMAL = "minimal"
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
+    XHIGH = "xhigh"
