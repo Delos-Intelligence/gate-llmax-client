@@ -82,6 +82,15 @@ class ModelPlanRow(BaseModel):
     available_plan_ids: list[str] = Field(default_factory=list)
 
 
+class FallbackHealthRow(BaseModel):
+    """One model whose fallback chain cannot catch it, and why."""
+
+    model: str
+    chain: list[str] = Field(default_factory=list)
+    problems: list[str] = Field(default_factory=list, description="`no_chain`, `dangling:<id>`, `no_rung_on_plan`.")
+    uncovered_plans: list[str] = Field(default_factory=list, description="Plans reaching this model where no rung is reachable.")
+
+
 class ExtraAttributeName(BaseModel):
     """A registered extra-attribute name (controlled vocabulary for model `extra_attributes`)."""
 
@@ -135,6 +144,13 @@ class ResolvedDeployment(BaseModel):
         return self.api_provider
 
 
+class FallbackRung(BaseModel):
+    """One configured fallback for a model, and its route count under the same filters as the primary."""
+
+    model: str
+    deployment_count: int = 0
+
+
 class ResolveResponse(BaseModel):
     """What a chat call to a given model would resolve to, without making the call."""
 
@@ -156,3 +172,7 @@ class ResolveResponse(BaseModel):
         description="The deployment the call would hit, when deterministic (pin key given). None under round-robin (picked per-call).",
     )
     extra_attributes: dict[str, Any] = Field(default_factory=dict, description="The resolved model's arbitrary attributes.")
+    fallbacks: list[FallbackRung] = Field(
+        default_factory=list,
+        description="Configured fallback chain in order, each with the routes it has here — a 0 means that rung cannot catch this caller.",
+    )

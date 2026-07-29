@@ -100,6 +100,31 @@ class LatencyRow(BaseModel):
     dur_p50: int | None = None
     dur_p90: int | None = None
     decode_tps: float | None = Field(default=None, description="Output tokens per second after the first token.")
+    sample_pct: int = Field(default=100, description="Percent of calls the percentiles were computed over; <100 means estimated.")
+
+
+class RedirectPair(BaseModel):
+    """One requested → served model pair, and how often the router made that swap."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    kind: str = Field(default="", description="`alias` (model_redirects) or `fallback` (fallback_model_ids).")
+    requested: str = ""
+    served: str | None = None
+    calls: int = 0
+    cost: float = 0.0
+
+
+class RedirectReport(BaseModel):
+    """Share of calls the router served on a model other than the one the caller asked for."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    total: int = 0
+    redirected: int = 0
+    share: float = 0.0
+    by_kind: dict[str, int] = Field(default_factory=dict)
+    pairs: list[RedirectPair] = Field(default_factory=list, description="Busiest requested → served swaps.")
 
 
 class TimeseriesPoint(BaseModel):

@@ -6,8 +6,8 @@ Two kinds of tools, and the difference matters:
   ``ping``, ``list_models``, ``list_plans``, ``model_plan_matrix``, ``plan_models``,
   ``model_in_plan``, ``prefer_list``, ``resolve``, ``heavy_test_cases``, ``verify_probes``,
   ``list_api_keys``, ``usage_errors``, ``usage_error_samples``, ``get_request_payload``,
-  ``usage_latency``, ``usage_timeseries``, ``usage_stats``, ``list_deployments``,
-  ``usage_samples``.
+  ``usage_latency``, ``usage_timeseries``, ``usage_stats``, ``usage_redirects``,
+  ``fallback_health``, ``list_deployments``, ``usage_samples``.
 * **Spends real money and quota** — ``heavy_test`` and ``verify_profile``. The first hammers a
   model with the shapes it claims to serve; the second probes whether those claims are right.
   Never reach for either to check the gateway is up or that a model exists — that is what
@@ -323,6 +323,8 @@ async def resolve(model: str, plan: str | None = None) -> dict[str, Any]:
     unroutable = [_deployment_line(d) for d in resolved.all_deployments if d.status != "ACTIVE"]
     if unroutable:
         out["unroutable"] = unroutable
+    if resolved.fallbacks:
+        out["fallbacks"] = " > ".join(r.model if r.deployment_count else f"{r.model}(no route)" for r in resolved.fallbacks)
     if not resolved.candidates:
         out["warning"] = "no routable deployment — a call to this model would fail"
     return out
@@ -776,7 +778,7 @@ async def usage_stats(
 
     Args:
         since: Duration or ISO timestamp. Max 90 days.
-        group: ``model``, ``key`` or ``operation``.
+        group: ``model``, ``key``, ``operation``, or ``model+operation`` to compare models on the same task.
         models: Model names to keep.
         keys: API key **names** to keep.
         operations: ``operation`` tags to keep.
@@ -804,6 +806,63 @@ async def usage_stats(
                 "reason_tok": r.reasoning_tokens or None,
                 "by_status": r.by_status or None,
             }
+        )
+        for r in rows
+    ]
+
+
+@mcp.tool()
+async def usage_redirects(since: str = "24h", limit: int = 20) -> dict[str, Any]:
+    """Free. Calls served on a model other than the one requested — the way to catch a fallback costing more than its primary.
+
+    Args:
+        since: Duration or ISO timestamp. Long windows can time out; start at ``8h``.
+        limit: Maximum requested -> served pairs.
+
+    Returns:
+        ``{total, redirected, share, by_kind, pairs}``; each pair ``{kind, requested, served, calls, cost}``
+        where ``kind`` is ``alias`` or ``fallback``. Needs a **dev** key.
+    """
+    try:
+        async with _client() as client:
+            report = await client.usage_redirects(since=since, limit=limit)
+    except LLMError as exc:
+        return {"error": _dev_error(exc)}
+    return _lean(
+        {
+            "total": report.total,
+            "redirected": report.redirected,
+            "share": report.share or None,
+            "by_kind": report.by_kind or None,
+            "pairs": [
+                _lean({"kind": p.kind, "requested": p.requested, "served": p.served, "calls": p.calls, "cost": round(p.cost, 2) or None})
+                for p in report.pairs
+            ],
+        }
+    )
+
+
+@mcp.tool()
+async def fallback_health(purpose: str = "chat") -> list[dict[str, Any]]:
+    """Free. Models whose fallback chain cannot catch them — no chain, a dangling id, or no rung reachable on a plan they serve.
+
+    A rung only counts on a plan whose hosting providers admit it, so an openrouter-only rung is
+    invisible to a plan without openrouter. Empty result = every chain is sound.
+
+    Args:
+        purpose: Model purpose to audit.
+
+    Returns:
+        Rows ``{model, chain, problems, uncovered_plans}``, worst first. Needs a **dev** key.
+    """
+    try:
+        async with _client() as client:
+            rows = await client.fallback_health(purpose=purpose)
+    except LLMError as exc:
+        return [{"error": _dev_error(exc)}]
+    return [
+        _lean(
+            {"model": r.model, "chain": " > ".join(r.chain) or None, "problems": r.problems, "uncovered_plans": r.uncovered_plans or None}
         )
         for r in rows
     ]

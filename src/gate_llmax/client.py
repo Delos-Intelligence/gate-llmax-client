@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from gate_llmax.models.audio import AudioRequest, AudioResponse
 from gate_llmax.models.audio_gen import AudioGenMode, AudioGenRequest, AudioGenResponse, AudioMode, DialogueTurn
 from gate_llmax.models.audio_isolation import AudioIsolationRequest, AudioIsolationResponse
-from gate_llmax.models.config import ExtraAttributeName, ModelInfo, ModelPlanRow, PlanInfo, ResolveResponse
+from gate_llmax.models.config import ExtraAttributeName, FallbackHealthRow, ModelInfo, ModelPlanRow, PlanInfo, ResolveResponse
 from gate_llmax.models.dubbing import DubbingRequest, DubbingResponse
 from gate_llmax.models.embed import EmbedRequest, EmbedResponse
 from gate_llmax.models.images import AspectRatio, ImageData, ImageQuality, ImageRequest, ImageResponse, ImageSize
@@ -40,6 +40,7 @@ from gate_llmax.models.usage import (
     ErrorReport,
     ErrorSample,
     LatencyRow,
+    RedirectReport,
     StatsRow,
     StoredPayload,
     TimeseriesPoint,
@@ -935,11 +936,14 @@ class LLMClient:
         buckets: list[int] | None = None,
         min_calls: int = 1,
         limit: int = 50,
+        sample: int | None = None,
     ) -> list[LatencyRow]:
         """GET /v1/usage/latency — TTFT/duration percentiles and decode speed per model or deployment.
 
         ``buckets`` are input-token edges (``[2000, 20000]``) that split each group by prompt
-        size — the way to tell queueing from prompt processing. Requires a ``dev`` API key.
+        size — the way to tell queueing from prompt processing. Percentiles cannot be
+        pre-aggregated, so windows past two days are row-sampled; every row reports the
+        ``sample_pct`` used and ``sample`` overrides it. Requires a ``dev`` API key.
         """
         params: list[tuple[str, str | int | float | None]] = [("since", since), ("group", group), ("limit", limit)]
         params += [("model", m) for m in models or []]
@@ -950,9 +954,26 @@ class LLMClient:
             params.append(("buckets", ",".join(str(b) for b in buckets)))
         if min_calls > 1:
             params.append(("min_calls", min_calls))
+        if sample is not None:
+            params.append(("sample", sample))
         response = await self._http.get("/v1/usage/latency", params=params)
         _raise_for_status(response)
         return [LatencyRow.model_validate(item) for item in response.json()]
+
+    async def usage_redirects(self, *, since: str = "24h", limit: int = 20) -> RedirectReport:
+        """GET /v1/usage/redirects — calls served on a model other than the one requested, by alias or fallback hop.
+
+        The way to catch a fallback that costs more than its primary. Requires a ``dev`` API key.
+        """
+        response = await self._http.get("/v1/usage/redirects", params=[("since", since), ("limit", limit)])
+        _raise_for_status(response)
+        return RedirectReport.model_validate(response.json())
+
+    async def fallback_health(self, *, purpose: str = "chat") -> list[FallbackHealthRow]:
+        """GET /v1/fallback-health — models whose fallback chain cannot catch them. Requires a ``dev`` API key."""
+        response = await self._http.get("/v1/fallback-health", params=[("purpose", purpose)])
+        _raise_for_status(response)
+        return [FallbackHealthRow.model_validate(item) for item in response.json()]
 
     async def usage_timeseries(
         self,
