@@ -244,6 +244,19 @@ class LLMClient:
         view._operation_prefix = f"{self._operation_prefix}/{segment}" if self._operation_prefix else segment  # noqa: SLF001
         return view
 
+    def set_seeding(self, seed_routing: object | None) -> Self:
+        """Return a view of this client pinned to *seed_routing* for deterministic routing.
+
+        Lets a caller that already holds a client add the seed rather than rebuild
+        one — e.g. a conversation pinning its turns to a single deployment to keep
+        the upstream prompt cache warm. ``None`` returns the client unchanged.
+        """
+        if seed_routing is None:
+            return self
+        view = self._view()
+        view._seed_routing_token = seed_to_token(seed_routing)  # noqa: SLF001
+        return view
+
     def with_usage_callback(self, *callbacks: UsageCallback) -> Self:
         """Return a view of this client that also fires ``callbacks`` after every billed call.
 
