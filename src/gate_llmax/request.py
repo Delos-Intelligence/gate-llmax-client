@@ -348,6 +348,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
     zone_selection: ZoneSelection | None = None
     hosting_providers: list[str] | None = None
     plan: str | None = None
+    deployment_id: str | None = None
     operation: str = ""
     seed_routing: str | None = None
     # When set, every streamed call this builder makes (including each tool-loop turn) sends a
@@ -404,6 +405,11 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         ``.zone(...)`` (AND).
         """
         self.hosting_providers = list(providers) if providers else None
+        return self
+
+    def dev(self, deployment_id: str) -> Self:
+        """Dev keys only: serve from this deployment id alone, skipping filters, rotation and fallback."""
+        self.deployment_id = deployment_id
         return self
 
     def with_tools(
@@ -711,6 +717,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             hosting_providers=self.hosting_providers,
             plan=self.plan,
             operation=self.operation,
+            deployment_id=self.deployment_id,
             seed_routing=self.seed_routing,
         )
         estimated_input: int | None = None
@@ -762,6 +769,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             hosting_providers=self.hosting_providers,
             plan=self.plan,
             operation=self.operation,
+            deployment_id=self.deployment_id,
             seed_routing=self.seed_routing,
         )
         responses = await self.client._send_batch(batch)  # noqa: SLF001
@@ -858,6 +866,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             hosting_providers=self.hosting_providers,
             plan=self.plan,
             operation=self.operation,
+            deployment_id=self.deployment_id,
             seed_routing=self.seed_routing,
         )
         response = await self.client._send(request)  # noqa: SLF001
@@ -1108,6 +1117,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             hosting_providers=self.hosting_providers,
             plan=self.plan,
             operation=self.operation,
+            deployment_id=self.deployment_id,
             seed_routing=self.seed_routing,
             cache_call=self.cache_call,
             cache_ttl=self.cache_ttl,

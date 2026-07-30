@@ -20,6 +20,10 @@ class CallControl(BaseModel):
     max_tries: int | None = Field(default=None, description="Per-call upstream attempts, including the first.")
     timeout: int | None = Field(default=None, description="Per-call upstream timeout in seconds.")
     operation: str = Field(default="", description="Caller-supplied usage tag; echoed onto RawUsage and the usage log row.")
+    deployment_id: str | None = Field(
+        default=None,
+        description="Dev keys only: serve from this deployment id alone, skipping filters, rotation and fallback.",
+    )
     cache_call: bool | None = Field(
         default=None,
         description=(
