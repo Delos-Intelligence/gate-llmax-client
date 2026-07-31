@@ -76,16 +76,34 @@ from .request import (
 from .streaming import StreamResponse
 
 # Outermost rung of the timeout ladder: strictly above Gate's own ceiling, so the gateway fires first.
-GATEWAY_MAX_BUDGET = 630.0
+GATE_MODEL_BUDGET = 600.0  # models.timeout — what Gate hands ONE upstream attempt
+GATE_WATCHDOG_MARGIN = 30.0  # Gate's watchdog sits this far above that budget
 CLIENT_MARGIN = 30.0
-DEFAULT_TIMEOUT = GATEWAY_MAX_BUDGET + CLIENT_MARGIN
-MEDIA_CLIENT_TIMEOUT = 630.0  # dubbing/video are long-running; outlast the server-side wait
+GATEWAY_MAX_BUDGET = GATE_MODEL_BUDGET + GATE_WATCHDOG_MARGIN  # Gate's ceiling for one attempt
+GATE_MAX_TRIES = 3  # models.max_tries — Gate re-runs the whole budget on the next deployment
+MEDIA_MAX_TRIES = 6  # audio and dubbing rotate further than chat does
+
+
+def client_ceiling(timeout: float | None = None, max_tries: int | None = None, *, tries: int = GATE_MAX_TRIES) -> float:
+    """Seconds to wait for one call: Gate's own worst case for it (per-attempt budget × retries), plus a margin."""
+    attempt = (timeout if timeout is not None else GATE_MODEL_BUDGET) + GATE_WATCHDOG_MARGIN
+    return attempt * (max_tries if max_tries is not None else tries) + CLIENT_MARGIN
+
+
+def request_ceiling(request: object, *, tries: int = GATE_MAX_TRIES) -> float:
+    """The ceiling for one request, honouring the ``timeout`` / ``max_tries`` overrides it carries."""
+    return client_ceiling(getattr(request, "timeout", None), getattr(request, "max_tries", None), tries=tries)
+
+
+DEFAULT_TIMEOUT = client_ceiling()  # a buffered call may sit behind Gate's whole retry ladder
+MEDIA_CLIENT_TIMEOUT = client_ceiling(tries=MEDIA_MAX_TRIES)  # video/dubbing/tts: Gate polls the job to the end
 VERIFY_CLIENT_TIMEOUT = 900.0  # a capability verification is dozens of live probes per endpoint
 
 CONNECT_TIMEOUT = 10.0
 POOL_TIMEOUT = 10.0
-# The SSE read budget is the gap between frames, not the whole stream.
-STREAM_READ_TIMEOUT = GATEWAY_MAX_BUDGET + CLIENT_MARGIN
+# The SSE read budget is the gap between frames, not the whole stream; only the first frame waits on the retry ladder.
+STREAM_READ_TIMEOUT = DEFAULT_TIMEOUT
+STREAM_FRAME_GAP = GATEWAY_MAX_BUDGET + CLIENT_MARGIN  # once frames flow, above Gate's own per-chunk watchdog
 STREAM_MAX_RETRIES = 2  # resume attempts after a severed connection
 STREAM_RETRY_BACKOFF = 0.5
 # finish_reason when a drop could not be resumed: the answer above it is partial.
@@ -116,6 +134,8 @@ class LLMClient:
     _derived_from: LLMClient | None
     _http: httpx.AsyncClient
     _stream_timeout: httpx.Timeout
+    _stream_frame_gap: float
+    _stream_first_frame: float
     _owns_http: bool
 
     def __init__(
@@ -124,6 +144,7 @@ class LLMClient:
         base_url: str,
         timeout: float = DEFAULT_TIMEOUT,
         stream_read_timeout: float = STREAM_READ_TIMEOUT,
+        stream_frame_gap: float = STREAM_FRAME_GAP,
         cache_call: bool | None = None,
         cache_ttl: int | None = None,
         temperature: float | None = None,
@@ -141,9 +162,13 @@ class LLMClient:
         Args:
             api_key: Gate API key sent as ``X-Gate-Key`` on every request.
             base_url: Base URL of the Gate gateway (trailing slash stripped).
-            timeout: Default request timeout in seconds, applied per request even when
-                ``httpx_aclient`` is shared, so a pool default can never silently shorten it.
-            stream_read_timeout: Max gap between SSE frames before the client gives up.
+            timeout: Default buffered-call ceiling in seconds, applied per request even when
+                ``httpx_aclient`` is shared, so a pool default can never silently shorten it. A
+                request carrying its own ``timeout`` / ``max_tries`` derives its ceiling from those
+                instead; media calls always do, since Gate waits out the whole job for them.
+            stream_read_timeout: How long to wait for the FIRST SSE frame, which sits behind
+                Gate's whole retry ladder.
+            stream_frame_gap: Max gap between two SSE frames once the stream has started.
             cache_call: Default response-cache switch applied to every call. ``None`` (the
                 default) defers to the API key's server-side ``response_caching`` default;
                 ``True`` / ``False`` force caching on / off. Per-call arguments override it.
@@ -210,6 +235,8 @@ class LLMClient:
             write=timeout,
             pool=POOL_TIMEOUT,
         )
+        self._stream_frame_gap = stream_frame_gap
+        self._stream_first_frame = stream_read_timeout
 
     def clear_usage_callbacks(self) -> None:
         """Drop all usage callbacks so subsequent calls on this client are unbilled / untracked.
@@ -568,7 +595,9 @@ class LLMClient:
             max_tries=max_tries,
             timeout=timeout,
         )
-        return self._direct_builder(request, "/v1/audio/dubbing", "Dubbing", DubbingResponse, client_timeout=MEDIA_CLIENT_TIMEOUT)
+        return self._direct_builder(
+            request, "/v1/audio/dubbing", "Dubbing", DubbingResponse, client_timeout=request_ceiling(request, tries=MEDIA_MAX_TRIES)
+        )
 
     @overload
     def audio(
@@ -752,8 +781,7 @@ class LLMClient:
             max_tries=max_tries,
             timeout=timeout,
         )
-        client_timeout = float(timeout) + 30.0 if timeout is not None else None
-        return self._direct_builder(request, "/v1/responses", "Responses", ResponsesResponse, client_timeout=client_timeout)
+        return self._direct_builder(request, "/v1/responses", "Responses", ResponsesResponse, client_timeout=request_ceiling(request))
 
     def vision(
         self,
@@ -1163,13 +1191,22 @@ class LLMClient:
         _raise_for_status(response)
         return response
 
+    def _buffered_ceiling(self, request: BaseModel) -> float:
+        """A request that sets its own ``timeout`` / ``max_tries`` moves Gate's ceiling, so it must move the client's too."""
+        if getattr(request, "timeout", None) is None and getattr(request, "max_tries", None) is None:
+            return self._timeout
+        return max(self._timeout, request_ceiling(request))
+
     async def _send_audio_gen(self, request: AudioGenRequest) -> AudioGenResponse:
         """POST to /v1/audio/generations and return an ``AudioGenResponse`` (long-running)."""
-        response = await self._post_json("/v1/audio/generations", request, "Audio generation", client_timeout=MEDIA_CLIENT_TIMEOUT)
+        response = await self._post_json(
+            "/v1/audio/generations", request, "Audio generation", client_timeout=request_ceiling(request, tries=MEDIA_MAX_TRIES)
+        )
         return AudioGenResponse.model_validate(response.json())
 
     async def _send(self, request: LLMRequest, *, priority: int = 0) -> LLMResponse:
         """POST to /v1/chat/completions, throttled by the client's rate limiter (no-op when unset)."""
+        ceiling = self._buffered_ceiling(request)
         async with self._limiter.guard(priority):
             try:
                 response = await self._http.post(
@@ -1177,10 +1214,10 @@ class LLMClient:
                     content=request.model_dump_json(),
                     headers={"Content-Type": "application/json"},
                     # Explicit: a shared httpx_aclient must not decide this client's ceiling.
-                    timeout=self._timeout,
+                    timeout=ceiling,
                 )
             except httpx.TimeoutException as exc:
-                raise LLMTimeoutError(f"Client-side ceiling ({self._timeout:.0f}s) hit before the gateway answered: {exc}") from exc
+                raise LLMTimeoutError(f"Client-side ceiling ({ceiling:.0f}s) hit before the gateway answered: {exc}") from exc
             except httpx.ConnectError as exc:
                 raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
 
@@ -1254,7 +1291,20 @@ class LLMClient:
             if response.status_code >= 400:
                 await response.aread()
             _raise_for_status(response)
-            async for chunk in StreamResponse(response):
+            chunks = StreamResponse(response).__aiter__()
+            started = False
+            while True:
+                # The first frame waits out Gate's whole retry ladder; every frame after it only waits for the next token.
+                budget = self._stream_frame_gap if started else self._stream_first_frame
+                try:
+                    async with asyncio.timeout(budget):
+                        chunk = await chunks.__anext__()
+                except StopAsyncIteration:
+                    return
+                except TimeoutError as exc:
+                    where = f"{budget:.0f}s frame gap" if started else f"{budget:.0f}s to the first frame"
+                    raise LLMTimeoutError(f"Client-side stream ceiling ({where}) hit before the gateway sent a frame: {exc}") from exc
+                started = True
                 yield chunk
 
     async def _stream(self, request: LLMRequest, *, priority: int = 0) -> AsyncIterator[StreamChunk]:
@@ -1281,7 +1331,7 @@ class LLMClient:
                     break
                 except httpx.TimeoutException as exc:
                     gap = self._stream_timeout.read or 0.0
-                    msg = f"Client-side stream ceiling ({gap:.0f}s frame gap) hit before the gateway sent a frame: {exc}"
+                    msg = f"Client-side stream ceiling ({gap:.0f}s transport read) hit before the gateway sent a frame: {exc}"
                     raise LLMTimeoutError(msg) from exc
                 except httpx.ConnectError as exc:
                     raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
@@ -1300,7 +1350,9 @@ class LLMClient:
 
     async def _send_video(self, request: VideoRequest) -> VideoResponse:
         """POST to /v1/videos and return a ``VideoResponse`` (long-running)."""
-        response = await self._post_json("/v1/videos", request, "Video generation", client_timeout=MEDIA_CLIENT_TIMEOUT)
+        response = await self._post_json(
+            "/v1/videos", request, "Video generation", client_timeout=request_ceiling(request, tries=MEDIA_MAX_TRIES)
+        )
         return VideoResponse.model_validate(response.json())
 
     async def _send_images(self, request: ImageRequest) -> ImageResponse:
@@ -1310,6 +1362,7 @@ class LLMClient:
                 "/v1/images",
                 content=request.model_dump_json(),
                 headers={"Content-Type": "application/json"},
+                timeout=request_ceiling(request, tries=MEDIA_MAX_TRIES),
             )
         except httpx.TimeoutException as exc:
             raise LLMTimeoutError(f"Images request timed out: {exc}") from exc
@@ -1326,6 +1379,7 @@ class LLMClient:
                 "/v1/images/stream",
                 content=request.model_dump_json(),
                 headers={"Content-Type": "application/json"},
+                timeout=request_ceiling(request, tries=MEDIA_MAX_TRIES),
             ) as response:
                 if response.status_code >= 400:
                     await response.aread()
@@ -1362,6 +1416,7 @@ class LLMClient:
                 "/v1/audio/speech",
                 content=request.model_dump_json(),
                 headers={"Content-Type": "application/json"},
+                timeout=request_ceiling(request, tries=MEDIA_MAX_TRIES),
             )
         except httpx.TimeoutException as exc:
             raise LLMTimeoutError(f"TTS request timed out: {exc}") from exc
@@ -1378,6 +1433,7 @@ class LLMClient:
                 "/v1/audio/speech/stream",
                 content=request.model_dump_json(),
                 headers={"Content-Type": "application/json"},
+                timeout=request_ceiling(request, tries=MEDIA_MAX_TRIES),
             ) as response:
                 if response.status_code >= 400:
                     await response.aread()

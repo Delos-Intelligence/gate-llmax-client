@@ -14,10 +14,13 @@ from gate_llmax.client import (
     CLIENT_MARGIN,
     CONNECT_TIMEOUT,
     DEFAULT_TIMEOUT,
+    GATE_MAX_TRIES,
     GATEWAY_MAX_BUDGET,
     MEDIA_CLIENT_TIMEOUT,
+    MEDIA_MAX_TRIES,
     STREAM_READ_TIMEOUT,
     LLMClient,
+    client_ceiling,
 )
 
 
@@ -34,9 +37,18 @@ def test_stream_ceiling_is_above_the_gateway() -> None:
     assert STREAM_READ_TIMEOUT > GATEWAY_MAX_BUDGET
 
 
-def test_media_ceiling_is_not_below_the_gateway() -> None:
-    """Media waits server-side for the whole job; it must not undercut that wait."""
-    assert MEDIA_CLIENT_TIMEOUT >= GATEWAY_MAX_BUDGET
+def test_media_ceiling_is_above_the_whole_retry_ladder() -> None:
+    """Gate may re-run the whole per-attempt budget on another deployment; a one-attempt ceiling cuts the retry off."""
+    assert MEDIA_CLIENT_TIMEOUT > GATEWAY_MAX_BUDGET * MEDIA_MAX_TRIES
+
+
+def test_buffered_ceiling_covers_a_retried_call() -> None:
+    assert DEFAULT_TIMEOUT > GATEWAY_MAX_BUDGET * GATE_MAX_TRIES
+
+
+def test_a_request_timeout_raises_the_client_ceiling() -> None:
+    """The bug this guards: a 1800s video request still cut at the default ceiling."""
+    assert client_ceiling(1800, 2) > 1800 * 2
 
 
 def test_connect_is_far_below_every_read_budget() -> None:
