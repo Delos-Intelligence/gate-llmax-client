@@ -44,6 +44,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger("gate.client.request")
 
 T = TypeVar("T", bound=BaseModel)
+# Unbound: list elements go through TypeAdapter, which takes primitives and dicts too.
+ElemT = TypeVar("ElemT")
 
 _DEFAULT_MULTICALL_TIMEOUT = 60.0
 
@@ -458,7 +460,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
     @overload
     def cast(self, model_type: type[T]) -> CastedRequestBuilder[T]: ...
     @overload
-    def cast(self, model_type: type[list[T]]) -> CastedRequestBuilder[list[T]]: ...
+    def cast(self, model_type: type[list[ElemT]]) -> CastedRequestBuilder[list[ElemT]]: ...
     def cast(self, model_type: Any) -> CastedRequestBuilder[Any]:
         """Return a copy of this builder that parses every result into ``model_type`` (forces JSON output).
 
