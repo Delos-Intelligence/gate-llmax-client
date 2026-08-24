@@ -317,7 +317,7 @@ class MediaBuilder[ResponseT: LLMCallRecord](BaseModel):
         for model in models:
             try:
                 return await self.call(model)
-            except (LLMModelNotFoundError, LLMServerError, LLMTimeoutError, TimeoutError) as exc:
+            except (LLMModelNotFoundError, LLMServerError, LLMTimeoutError, LLMConnectionError, TimeoutError) as exc:
                 logger.warning("call_prefer: model=%s failed (%s), trying next", model, exc)
                 last_error = exc
         if last_error is not None:
@@ -803,7 +803,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         - Response with ``status != SUCCESS`` (server ran but reported failure).
 
         Immediate re-raise (not model-specific, no fallback):
-        - ``LLMAuthError``, ``LLMCapabilityError``, ``LLMConnectionError``.
+        - ``LLMAuthError``, ``LLMCapabilityError``.
 
         When an exception triggers a fallback, ``on_usage`` is called with
         estimated input tokens (``estimated=True``) for the failed attempt.
@@ -815,7 +815,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         models are exhausted, or a ``NO_DEPLOYMENT`` response if ``models`` is
         empty or every attempt raised an exception.
         """
-        _fallback_exc = (LLMModelNotFoundError, LLMServerError, LLMTimeoutError)
+        _fallback_exc = (LLMModelNotFoundError, LLMServerError, LLMTimeoutError, LLMConnectionError)
         estimated_input = estimate_input_tokens(self.system_prompt, self.messages, self.images)
         last: ResponseT | None = None
         for model in models:
@@ -841,7 +841,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         """``call`` that converts model-specific failures into a ``NO_DEPLOYMENT`` result."""
         try:
             return await self.call(model)
-        except (LLMModelNotFoundError, LLMServerError, LLMTimeoutError) as exc:
+        except (LLMModelNotFoundError, LLMServerError, LLMTimeoutError, LLMConnectionError) as exc:
             logger.warning("call_best: model=%s failed (%s), excluded", model, exc)
             return self._finalize(LLMResponse(model=model, status=OutputStatus.NO_DEPLOYMENT))
 
@@ -1319,7 +1319,7 @@ class ImageStreamBuilder:
                 async for frame in self._source.call_stream(model):
                     started = True
                     yield frame
-            except (LLMModelNotFoundError, LLMServerError, LLMTimeoutError, TimeoutError) as exc:
+            except (LLMModelNotFoundError, LLMServerError, LLMTimeoutError, LLMConnectionError, TimeoutError) as exc:
                 if started:
                     raise
                 logger.warning("image stream call_prefer: model=%s failed pre-frame (%s), trying next", model, exc)
