@@ -35,23 +35,25 @@ def test_from_openai_no_reasoning_is_empty() -> None:
 
 
 def test_to_openai_chunk_carries_reasoning() -> None:
+    """One spelling goes out, whichever one came in."""
     chunk = StreamChunk(reasoning="abc").to_openai_chunk(model="m", completion_id="c", created=0)
-    assert chunk["choices"][0]["delta"]["reasoning_content"] == "abc"
+    assert chunk["choices"][0]["delta"]["reasoning"] == "abc"
+    assert "reasoning_content" not in chunk["choices"][0]["delta"]
 
 
 def test_to_openai_chunk_omits_reasoning_when_text_only() -> None:
     chunk = StreamChunk(text="hi").to_openai_chunk(model="m", completion_id="c", created=0)
-    assert "reasoning_content" not in chunk["choices"][0]["delta"]
+    assert "reasoning" not in chunk["choices"][0]["delta"]
     assert chunk["choices"][0]["delta"]["content"] == "hi"
 
 
 def test_to_openai_completion_carries_reasoning() -> None:
     completion = LLMResponse(reasoning="xyz", raw_text="hi").to_openai_completion(model="m", completion_id="c", created=0)
     message = completion["choices"][0]["message"]
-    assert message["reasoning_content"] == "xyz"
+    assert message["reasoning"] == "xyz"
     assert message["content"] == "hi"
 
 
 def test_to_openai_completion_omits_reasoning_when_empty() -> None:
     completion = LLMResponse(raw_text="hi").to_openai_completion(model="m", completion_id="c", created=0)
-    assert "reasoning_content" not in completion["choices"][0]["message"]
+    assert "reasoning" not in completion["choices"][0]["message"]

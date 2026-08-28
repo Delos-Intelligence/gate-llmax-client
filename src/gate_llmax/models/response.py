@@ -97,7 +97,9 @@ class StreamChunkDelta(BaseModel):
     """Delta content for a streaming chunk (OpenAI compat)."""
 
     content: str | None = None
-    reasoning_content: str | None = None
+    # Upstreams spell the chain `reasoning` (OpenRouter) or `reasoning_content` (DeepSeek/GLM);
+    # both are read on the way in, and `reasoning` is the one spelling written on the way out.
+    reasoning: str | None = None
     tool_calls: list[JsonDict] | None = None
 
 
@@ -149,7 +151,7 @@ class StreamChunk(BaseModel):
             StreamChunkChoice(
                 delta=StreamChunkDelta(
                     content=self.text or None,
-                    reasoning_content=self.reasoning or None,
+                    reasoning=self.reasoning or None,
                     tool_calls=self.tool_calls_delta,
                 ),
                 finish_reason=self.finish_reason,
@@ -245,6 +247,7 @@ class StreamChunk(BaseModel):
         """Build from an AWS Bedrock streaming event."""
         event_type = event.get("type", "")
         text = ""
+        reasoning = ""
         is_done = False
         finish_reason = None
         input_tokens = None
@@ -269,7 +272,8 @@ class StreamChunk(BaseModel):
                 ]
         elif event_type == "content_block_delta":
             delta = event.get("delta", {})
-            if delta.get("type") == "input_json_delta":
+            delta_type = delta.get("type")
+            if delta_type == "input_json_delta":
                 # One tool-argument JSON fragment; index matches the opening block.
                 tool_calls_delta = [
                     {
@@ -277,6 +281,10 @@ class StreamChunk(BaseModel):
                         "function": {"arguments": delta.get("partial_json", "")},
                     }
                 ]
+            elif delta_type == "thinking_delta":
+                # Extended thinking streams its chain here. signature_delta — and whole
+                # redacted_thinking blocks — carry opaque ciphertext, so they are dropped.
+                reasoning = delta.get("thinking", "")
             else:
                 text = delta.get("text", "")
         elif event_type == "message_start":
@@ -298,6 +306,7 @@ class StreamChunk(BaseModel):
 
         return cls(
             text=text,
+            reasoning=reasoning,
             is_done=is_done,
             finish_reason=finish_reason,
             input_tokens=input_tokens,
@@ -373,7 +382,7 @@ class LLMResponse(LLMCallRecord):
         """Serialize as an OpenAI ChatCompletion dict (single choice; ``finish_reason`` from tool calls)."""
         message: dict[str, Any] = {"role": "assistant", "content": self.raw_text or None}
         if self.reasoning:
-            message["reasoning_content"] = self.reasoning
+            message["reasoning"] = self.reasoning
         if self.tool_calls:
             message["tool_calls"] = [tc.model_dump() for tc in self.tool_calls]
         return {
