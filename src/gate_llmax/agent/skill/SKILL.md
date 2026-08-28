@@ -98,7 +98,7 @@ For "is the gateway up?" use `ping`, for "does this model exist / route under th
 signal, the single smoke case: `heavy_test(model, n=1, only=["smoke"])`.
 
 - `heavy_test_cases` — the catalogue (id, intent, tags, required capabilities). Free, no gateway call.
-- `heavy_test(model, n=5, rate=6, only=None, plan=None)` — run the capability-matched suite `n`
+- `heavy_test(model, n=5, rate=6, only=None, plan=None, deployment=None)` — run the capability-matched suite `n`
   times at `rate` requests/minute. The suite is picked from the model's registered capabilities, so
   a multimodal tool-using model is tested on ~22 shapes (text, streaming, multi-turn, tool calls
   auto/forced/parallel/streamed, vision, vision+tools, image degradation, JSON mode, reasoning,
@@ -108,6 +108,11 @@ signal, the single smoke case: `heavy_test(model, n=1, only=["smoke"])`.
 It **spends real money and quota**: `n × len(cases)` requests. Narrow it with `only=["tools"]` (case
 ids or tags) while iterating, then run the full suite once. Launches are paced, not serialized —
 one every `60/rate` seconds — so slow answers overlap like real traffic.
+
+`deployment=` (a uuid — `resolve` prints one per deployment as `id=…`) pins every request in the
+suite to that one endpoint: routable even while it is INACTIVE, and with the fallback chain off, so
+a newly added deployment can be qualified before it takes production rotation. It needs a **dev**
+key, and the report's `deployment_pin` block says whether the pin actually held.
 
 The report gives pass rate and status breakdown, latency + TTFT percentiles, token/cost totals, a
 per-case table, which deployments served the traffic, a determinism check, and every failing run

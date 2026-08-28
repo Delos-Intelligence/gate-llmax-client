@@ -3,7 +3,7 @@
     gate-llmax agent install [--project DIR] [--force]   copy the skill + register the MCP
     gate-llmax agent mcp                                  run the MCP server over stdio
     gate-llmax agent uninstall [--project DIR]            remove the skill + MCP entry
-    gate-llmax heavy-test MODEL [-n N] [--rate R]         hammer a chat model, print the report
+    gate-llmax heavy-test MODEL [-n N] [--rate R] [--deployment ID]   hammer a chat model, print the report
 
 ``install`` writes ``<project>/.claude/skills/gate-llmax/SKILL.md``, adds a ``gate-llmax`` server
 to ``<project>/.mcp.json`` (preserving any other servers), then settles the gateway credentials:
@@ -226,6 +226,7 @@ def _heavy_test(args: argparse.Namespace) -> int:
                 n=args.n,
                 rate=args.rate,
                 plan=args.plan,
+                deployment=args.deployment,
                 only=args.only,
                 include_runs=args.include_runs,
             )
@@ -262,6 +263,11 @@ def main(argv: list[str] | None = None) -> int:
     heavy.add_argument("-n", type=int, default=5, help="How many times to replay the suite (default: 5).")
     heavy.add_argument("--rate", type=float, default=6.0, help="Launch rate in requests per minute (default: 6).")
     heavy.add_argument("--plan", default=None, help="Hosting plan to route under.")
+    heavy.add_argument(
+        "--deployment",
+        default=None,
+        help="Pin every request to this deployment id (dev key only); INACTIVE rows included, no fallback.",
+    )
     heavy.add_argument("--only", nargs="*", default=None, help="Restrict to these case ids or tags.")
     heavy.add_argument("--timeout", type=int, default=240, help="Per-request timeout in seconds (default: 240).")
     heavy.add_argument("--include-runs", action="store_true", help="Include every individual run in the report.")

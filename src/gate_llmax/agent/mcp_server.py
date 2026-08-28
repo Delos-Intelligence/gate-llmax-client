@@ -260,9 +260,9 @@ async def prefer_list(
 
 
 def _deployment_line(dep: ResolvedDeployment) -> str:
-    """One deployment as a single line: name, host, region, priority, status."""
+    """One deployment as a single line: name, host, region, priority, status, and the id ``heavy_test(deployment=)`` takes."""
     where = "/".join(p for p in (dep.hosting_provider, dep.region, dep.country) if p)
-    parts = [dep.name, f"@ {where}" if where else "", f"({dep.api_provider})", f"p{dep.priority}", dep.status]
+    parts = [dep.name, f"@ {where}" if where else "", f"({dep.api_provider})", f"p{dep.priority}", dep.status, f"id={dep.id}"]
     line = " ".join(p for p in parts if p)
     return f"{line} — {dep.last_error}" if dep.last_error else line
 
@@ -345,6 +345,7 @@ async def heavy_test(
     n: int = DEFAULT_N,
     rate: float = DEFAULT_RATE_PER_MIN,
     plan: str | None = None,
+    deployment: str | None = None,
     only: list[str] | None = None,
     operation: str = DEFAULT_OPERATION,
     max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
@@ -359,6 +360,10 @@ async def heavy_test(
     up use ``ping``; to check a model exists and has a deployment use ``resolve``; to see what the
     suite would run use ``heavy_test_cases``. None of those cost anything. For a cheap first
     signal, run the single smoke case once: ``heavy_test(model, n=1, only=["smoke"])``.
+
+    ``deployment`` (a uuid from ``resolve``) pins every request in the suite to one endpoint,
+    routable even while it is INACTIVE and with the fallback chain switched off — that is how a
+    freshly added deployment is qualified before it takes production rotation.
 
     The suite is capability-matched: a model with ``supports_images`` gets the vision cases, one
     with ``supports_tools`` the tool-call cases, and so on (``heavy_test_cases`` lists them all),
@@ -376,7 +381,8 @@ async def heavy_test(
         model: chat model name as registered on the gateway (e.g. ``gpt-5.6-terra``).
         n: how many times to replay the whole suite. Default 5.
         rate: launch rate in requests per minute. Default 6 (one every 10 seconds).
-        plan: optional hosting plan to route under.
+        plan: optional hosting plan to route under; ignored when ``deployment`` is set.
+        deployment: deployment id (uuid, from ``resolve``) to pin every request to. Needs a **dev** key.
         only: restrict to these case ids or tags (e.g. ``["tools"]``, ``["smoke", "streaming"]``).
         operation: usage tag written to the gateway usage log.
         max_concurrency: ceiling on in-flight requests.
@@ -386,7 +392,8 @@ async def heavy_test(
     Returns:
         Pass rate and status breakdown, latency and TTFT percentiles, token/cost totals, a
         per-case table, which deployments served the traffic, a determinism check, and the
-        failing runs with their reasons. Works with any API key.
+        failing runs with their reasons. Works with any API key; ``deployment`` needs a dev one.
+        With ``deployment`` set, ``deployment_pin`` says whether the pin actually held.
     """
     try:
         async with _client() as client:
@@ -396,6 +403,7 @@ async def heavy_test(
                 n=n,
                 rate=rate,
                 plan=plan,
+                deployment=deployment,
                 only=only,
                 operation=operation,
                 max_concurrency=max_concurrency,

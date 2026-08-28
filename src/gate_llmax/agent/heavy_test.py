@@ -23,13 +23,13 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
 from gate_llmax.client import LLMClient
 from gate_llmax.exceptions import LLMError
-from gate_llmax.models.config import ModelInfo, ModelPurpose
+from gate_llmax.models.config import ModelInfo, ModelPurpose, ResolvedDeployment
 from gate_llmax.models.messages import Message
 from gate_llmax.models.request import RequestSpecifics
 from gate_llmax.models.response import LLMResponse, StreamChunk, ToolCall, ToolFunction
@@ -616,6 +616,8 @@ class RunRecord:
     api_provider: str = ""
     hosting_provider: str = ""
     region: str = ""
+    deployment_id: str = ""
+    pin: str = ""
     text_chars: int = 0
     reasoning_chars: int = 0
     tool_calls: list[str] = field(default_factory=list)
@@ -639,6 +641,8 @@ class RunRecord:
             "api_provider": self.api_provider,
             "hosting_provider": self.hosting_provider,
             "region": self.region,
+            "deployment_id": self.deployment_id,
+            "pin": self.pin,
             "text_chars": self.text_chars,
             "reasoning_chars": self.reasoning_chars,
             "tool_calls": self.tool_calls,
@@ -709,7 +713,7 @@ def check(expect: Expect, seen: Observed) -> list[str]:
     return check_answered(expect, seen) + check_text(expect, seen) + check_shape(expect, seen)
 
 
-def build(client: LLMClient, case: HeavyCase, *, operation: str, plan: str | None) -> Any:
+def build(client: LLMClient, case: HeavyCase, *, operation: str, plan: str | None, deployment: str | None = None) -> Any:
     """A configured request builder for one case (cache off — a replay would report stale timings)."""
     builder = client.request(
         system_prompt=case.system_prompt,
@@ -723,6 +727,8 @@ def build(client: LLMClient, case: HeavyCase, *, operation: str, plan: str | Non
     )
     if plan:
         builder.plan = plan
+    if deployment:
+        builder = builder.dev(deployment)
     if case.tools:
         builder = builder.with_tools(list(case.tools), tool_choice=case.tool_choice, parallel_tool_calls=case.parallel_tool_calls)
     if case.json_mode:
@@ -812,7 +818,20 @@ async def call_buffered(builder: Any, model: str, record: RunRecord) -> Observed
     record.api_provider = response.usage.api_provider
     record.hosting_provider = response.usage.hosting_provider
     record.region = response.usage.region
+    record.deployment_id = str(response.deployment_id) if response.deployment_id else ""
     return observe_response(response)
+
+
+def pin_verdict(record: RunRecord, pinned: ResolvedDeployment | None) -> str:
+    """How firmly this run proves the pin held: ``ok`` on an id match, ``consistent`` on host+region alone, else ``mismatch``."""
+    if pinned is None:
+        return ""
+    if record.deployment_id:
+        return "ok" if record.deployment_id == pinned.id else "mismatch"
+    if not record.hosting_provider:
+        return "unknown"
+    same_region = not record.region or not pinned.region or record.region == pinned.region
+    return "consistent" if record.hosting_provider == pinned.hosting_provider and same_region else "mismatch"
 
 
 async def run_case(
@@ -823,12 +842,14 @@ async def run_case(
     *,
     operation: str,
     plan: str | None,
+    deployment: str | None = None,
+    pinned: ResolvedDeployment | None = None,
 ) -> RunRecord:
     """Dispatch one case once and judge the answer. Never raises — a failure is a record."""
     started = time.perf_counter()
     record = RunRecord(case_id=case.id, attempt=attempt, ok=False, status="ERROR")
     try:
-        builder = build(client, case, operation=operation, plan=plan)
+        builder = build(client, case, operation=operation, plan=plan, deployment=deployment)
         seen = await (consume_stream(builder, model, record, started) if case.stream else call_buffered(builder, model, record))
         record.failures = check(case.expect, seen) if record.status == "SUCCESS" else ["status " + record.status]
         record.text_chars = len(seen.text)
@@ -847,6 +868,10 @@ async def run_case(
         record.error = f"{type(exc).__name__}: {exc}"
         record.failures = [record.error]
     record.latency_ms = int((time.perf_counter() - started) * 1000)
+    record.pin = pin_verdict(record, pinned)
+    if record.pin == "mismatch":
+        record.ok = False
+        record.failures = [*record.failures, f"served by {record.deployment_id or record.hosting_provider}, not the pinned deployment"]
     return record
 
 
@@ -879,6 +904,37 @@ def tally(records: list[RunRecord]) -> tuple[dict[str, int], dict[str, int]]:
             key = f"{record.hosting_provider}/{record.region}" if record.region else record.hosting_provider
             hosts[key] = hosts.get(key, 0) + 1
     return statuses, hosts
+
+
+def deployment_tally(records: list[RunRecord], names: Mapping[str, str]) -> dict[str, int]:
+    """How many runs each deployment served, named where the id came back; a streamed run only knows its host."""
+    counts: dict[str, int] = {}
+    for record in records:
+        if record.deployment_id:
+            key = f"{names[record.deployment_id]} ({record.deployment_id})" if record.deployment_id in names else record.deployment_id
+        elif record.hosting_provider:
+            key = f"{record.hosting_provider} (streamed — no deployment id on the wire)"
+        else:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def pin_report(pinned: ResolvedDeployment, records: list[RunRecord]) -> dict[str, Any]:
+    """Whether every run really went to the pinned deployment, and how strong the evidence for that is."""
+    verdicts: dict[str, int] = {}
+    for record in records:
+        verdicts[record.pin or "unknown"] = verdicts.get(record.pin or "unknown", 0) + 1
+    return {
+        "id": pinned.id,
+        "name": pinned.name,
+        "hosting_provider": pinned.hosting_provider,
+        "region": pinned.region,
+        "status": pinned.status,
+        "runs": verdicts,
+        "held": verdicts.get("mismatch", 0) == 0,
+        "evidence": "ok = the run reported this deployment id; consistent = streamed, only host and region could be checked",
+    }
 
 
 def per_case_table(cases: list[HeavyCase], records: list[RunRecord]) -> list[dict[str, Any]]:
@@ -924,6 +980,8 @@ def summarize(
     rate: float,
     elapsed_s: float,
     include_runs: bool,
+    pinned: ResolvedDeployment | None = None,
+    deployment_names: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Fold the run records into the report the caller (or an agent) reads."""
     ok = [r for r in records if r.ok]
@@ -957,13 +1015,34 @@ def summarize(
         },
         "cost_usd": round(sum(r.cost for r in records), 6),
         "hosting_providers": hosts,
+        "deployments": deployment_tally(records, deployment_names or {}),
         "per_case": per_case,
         "determinism": determinism,
         "failures": [r.as_dict() for r in records if not r.ok][:60],
     }
+    if pinned is not None:
+        report["deployment_pin"] = pin_report(pinned, records)
     if include_runs:
         report["runs"] = [r.as_dict() for r in records]
     return report
+
+
+async def deployment_index(client: LLMClient, model_name: str) -> dict[str, ResolvedDeployment]:
+    """Every deployment of ``model_name`` by id, whatever its status; empty when the gateway will not say."""
+    try:
+        resolved = await client.resolve(model_name)
+    except LLMError:
+        return {}
+    return {d.id: d for d in resolved.all_deployments}
+
+
+async def dev_key_error(client: LLMClient) -> str | None:
+    """The message to report when the configured key lacks the ``dev`` flag a deployment pin needs."""
+    try:
+        await client.list_plans()
+    except LLMError as exc:
+        return f"Pinning a deployment needs a dev API key (the gateway 403s otherwise); this one was refused: {exc}"
+    return None
 
 
 async def run_heavy_test(
@@ -973,6 +1052,7 @@ async def run_heavy_test(
     n: int = DEFAULT_N,
     rate: float = DEFAULT_RATE_PER_MIN,
     plan: str | None = None,
+    deployment: str | None = None,
     only: Sequence[str] | None = None,
     operation: str = DEFAULT_OPERATION,
     max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
@@ -991,7 +1071,8 @@ async def run_heavy_test(
         model_name: the chat model to hammer, as registered on the gateway.
         n: how many times to replay the whole suite (total requests = n x selected cases).
         rate: launch rate in requests per minute (6 = one every 10 s).
-        plan: optional hosting plan to route under.
+        plan: optional hosting plan to route under; ignored when ``deployment`` pins the route.
+        deployment: pin every request to this deployment id (dev key only) — INACTIVE rows included, no fallback.
         only: restrict to these case ids or tags (e.g. ``["tools", "streaming"]``).
         operation: usage tag written to the gateway's usage log.
         max_concurrency: ceiling on in-flight requests.
@@ -1009,6 +1090,17 @@ async def run_heavy_test(
     if model.purpose is not ModelPurpose.CHAT:
         return {"error": f"Model '{model_name}' has purpose '{model.purpose.value}'; heavy_test only runs chat models."}
 
+    catalogue = await deployment_index(client, model.name)
+    pinned: ResolvedDeployment | None = None
+    if deployment:
+        pinned = catalogue.get(deployment)
+        if pinned is None:
+            known = ", ".join(f"{d.name}={i}" for i, d in catalogue.items())
+            return {"error": f"Deployment '{deployment}' does not serve model '{model.name}'. Its deployments: {known or 'none reported'}."}
+        refused = await dev_key_error(client)
+        if refused:
+            return {"error": refused}
+
     cases = [profile_case(case, model) for case in select_cases(model, only)]
     if not cases:
         return {"error": f"No test cases match model '{model_name}' with only={list(only or [])}."}
@@ -1019,7 +1111,7 @@ async def run_heavy_test(
 
     async def dispatch(case: HeavyCase, attempt: int) -> RunRecord:
         async with limiter:
-            return await run_case(client, model.name, case, attempt, operation=operation, plan=plan)
+            return await run_case(client, model.name, case, attempt, operation=operation, plan=plan, deployment=deployment, pinned=pinned)
 
     started = time.perf_counter()
     tasks: list[asyncio.Task[RunRecord]] = []
@@ -1032,4 +1124,15 @@ async def run_heavy_test(
     records = list(await asyncio.gather(*tasks))
     elapsed = time.perf_counter() - started
 
-    return summarize(model.name, model, cases, records, n=n, rate=rate, elapsed_s=elapsed, include_runs=include_runs)
+    return summarize(
+        model.name,
+        model,
+        cases,
+        records,
+        n=n,
+        rate=rate,
+        elapsed_s=elapsed,
+        include_runs=include_runs,
+        pinned=pinned,
+        deployment_names={i: d.name for i, d in catalogue.items()},
+    )
