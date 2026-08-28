@@ -76,3 +76,32 @@ def test_bedrock_plain_text_emits_no_tool_deltas() -> None:
     text, tools = _accumulate(events)
     assert text == "hello world"
     assert tools == {}
+
+
+def test_bedrock_thinking_deltas_land_on_reasoning() -> None:
+    """Extended thinking streams as ``thinking_delta``: reasoning, never answer text."""
+    events: list[dict[str, Any]] = [
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "Let me "}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "count."}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "EqQBCgIYAh=="}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "content_block_start", "index": 1, "content_block": {"type": "text"}},
+        {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "Three."}},
+    ]
+    chunks = [StreamChunk.from_bedrock_event(event) for event in events]
+    assert "".join(c.reasoning for c in chunks) == "Let me count."
+    assert "".join(c.text for c in chunks) == "Three."
+
+
+def test_bedrock_redacted_thinking_is_dropped() -> None:
+    """A ``redacted_thinking`` block is opaque ciphertext — it reaches neither field."""
+    events: list[dict[str, Any]] = [
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "redacted_thinking", "data": "EroBCkY=="}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "Hi."}},
+    ]
+    chunks = [StreamChunk.from_bedrock_event(event) for event in events]
+    assert "".join(c.reasoning for c in chunks) == ""
+    assert "".join(c.text for c in chunks) == "Hi."
+    assert all(c.tool_calls_delta is None for c in chunks)
