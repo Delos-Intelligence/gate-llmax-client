@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..types import JsonDict, ReasoningEffort
 from .messages import Message
@@ -260,3 +260,29 @@ class LLMRequest(CallControl):
         default=None,
         description="Wall-clock budget for the whole call. Only used with parallel/fallback targets.",
     )
+
+    @field_validator("tools")
+    @classmethod
+    def _dedupe_tool_names(cls, tools: list[JsonDict] | None) -> list[JsonDict] | None:
+        """Drop duplicate tool schemas by function name, keeping the first occurrence.
+
+        Bedrock rejects the entire request with ``400 tools: Tool names must be unique`` when the
+        same function name appears twice, so a caller that assembles its tool list from several
+        sources (base tools + lazily unlocked toolboxes) kills the run before its first turn.
+        Enforcing uniqueness on the request model covers every dispatch path (single, parallel,
+        fallback, best, streaming and the tool loop), which all serialize this same field.
+        """
+        if not tools:
+            return tools
+        unique: list[JsonDict] = []
+        seen: set[str] = set()
+        for tool in tools:
+            fn = tool.get("function")
+            raw = fn.get("name") if isinstance(fn, dict) else tool.get("name")
+            name = raw if isinstance(raw, str) and raw else None
+            if name is not None:
+                if name in seen:
+                    continue
+                seen.add(name)
+            unique.append(tool)
+        return unique
