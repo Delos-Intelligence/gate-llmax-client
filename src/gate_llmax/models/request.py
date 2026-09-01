@@ -38,6 +38,13 @@ class CallControl(BaseModel):
             "default (600s). Has no effect on its own — caching is enabled by ``cache_call``."
         ),
     )
+    no_fallback: bool = Field(
+        default=False,
+        description=(
+            "Skip the automatic model-level fallback chain; fail instead of serving a different "
+            "model (deployment rotation and redirects still apply)."
+        ),
+    )
 
 
 class ZoneSelection(BaseModel):
