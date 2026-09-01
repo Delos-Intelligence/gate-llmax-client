@@ -10,7 +10,7 @@ import json
 import logging
 import warnings
 from collections.abc import AsyncIterator
-from typing import Literal, Self, overload
+from typing import Any, Literal, Self, overload
 
 import httpx
 from pydantic import BaseModel
@@ -901,6 +901,19 @@ class LLMClient:
         response = await self._http.get("/v1/usage/keys")
         _raise_for_status(response)
         return [ApiKeyName.model_validate(item) for item in response.json()]
+
+    async def list_mcp_servers(self) -> list[dict[str, Any]]:
+        """GET /v1/mcp/servers — every configured MCP server (slug, name, type, enabled). Requires a ``dev`` key."""
+        response = await self._http.get("/v1/mcp/servers")
+        _raise_for_status(response)
+        return list(response.json())
+
+    async def mcp_usage(self, *, since: str | None = None) -> list[dict[str, Any]]:
+        """GET /v1/mcp/usage — per-server MCP tool-call volume, error rate and latency. Requires a ``dev`` key."""
+        params = {"since": since} if since else None
+        response = await self._http.get("/v1/mcp/usage", params=params)
+        _raise_for_status(response)
+        return list(response.json())
 
     async def usage_errors(
         self,
