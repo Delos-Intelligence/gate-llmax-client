@@ -1013,6 +1013,40 @@ async def usage_samples(
     ]
 
 
+@mcp.tool()
+async def list_mcp_servers() -> list[dict[str, Any]]:
+    """Free. Every MCP server the gateway exposes — slug, name, type (builtin/json/handmade), enabled.
+
+    Secret-free: credentials are never returned. This is the MCP counterpart of ``list_deployments``.
+
+    Returns:
+        Rows ``{slug, name, type, enabled, description}``, grouped by type. Needs a **dev** key.
+    """
+    try:
+        async with _client() as client:
+            return await client.list_mcp_servers()
+    except LLMError as exc:
+        return [{"error": _dev_error(exc)}]
+
+
+@mcp.tool()
+async def mcp_usage(since: str | None = None) -> list[dict[str, Any]]:
+    """Free. Per-MCP-server tool-call volume, error rate and latency — the MCP counterpart of ``usage_stats``.
+
+    Args:
+        since: ISO timestamp lower bound (e.g. ``2026-09-01T00:00:00Z``). Omit for all-time.
+
+    Returns:
+        One row per server ``{mcp_server_id/slug, calls, errors, ...}`` from get_mcp_usage_summary.
+        Needs a **dev** key.
+    """
+    try:
+        async with _client() as client:
+            return await client.mcp_usage(since=since)
+    except LLMError as exc:
+        return [{"error": _dev_error(exc)}]
+
+
 def main() -> None:
     """Run the MCP server over stdio (entry point for ``gate-llmax agent mcp``)."""
     mcp.run()
