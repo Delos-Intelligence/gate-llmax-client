@@ -352,6 +352,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
     plan: str | None = None
     deployment_id: str | None = None
     no_fallback: bool = False
+    fallback_on_content_policy: bool = False
     operation: str = ""
     seed_routing: str | None = None
     # When set, every streamed call this builder makes (including each tool-loop turn) sends a
@@ -418,6 +419,11 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
     def without_fallback(self, *, on: bool = True) -> Self:
         """Refuse the automatic model-level fallback chain; fail rather than serve a different model."""
         self.no_fallback = on
+        return self
+
+    def with_content_policy_fallback(self, *, on: bool = True) -> Self:
+        """On a provider content-policy block, advance to the next fallback model rather than return the block."""
+        self.fallback_on_content_policy = on
         return self
 
     def with_tools(
@@ -727,6 +733,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             operation=self.operation,
             deployment_id=self.deployment_id,
             no_fallback=self.no_fallback,
+            fallback_on_content_policy=self.fallback_on_content_policy,
             seed_routing=self.seed_routing,
         )
         estimated_input: int | None = None
@@ -780,6 +787,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             operation=self.operation,
             deployment_id=self.deployment_id,
             no_fallback=self.no_fallback,
+            fallback_on_content_policy=self.fallback_on_content_policy,
             seed_routing=self.seed_routing,
         )
         responses = await self.client._send_batch(batch)  # noqa: SLF001
@@ -878,6 +886,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             operation=self.operation,
             deployment_id=self.deployment_id,
             no_fallback=self.no_fallback,
+            fallback_on_content_policy=self.fallback_on_content_policy,
             seed_routing=self.seed_routing,
         )
         response = await self.client._send(request)  # noqa: SLF001
@@ -1130,6 +1139,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             operation=self.operation,
             deployment_id=self.deployment_id,
             no_fallback=self.no_fallback,
+            fallback_on_content_policy=self.fallback_on_content_policy,
             seed_routing=self.seed_routing,
             cache_call=self.cache_call,
             cache_ttl=self.cache_ttl,

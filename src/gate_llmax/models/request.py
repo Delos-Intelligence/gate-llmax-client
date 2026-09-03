@@ -45,6 +45,14 @@ class CallControl(BaseModel):
             "model (deployment rotation and redirects still apply)."
         ),
     )
+    fallback_on_content_policy: bool = Field(
+        default=False,
+        description=(
+            "When a provider blocks the call on its content policy, advance to the next fallback "
+            "model instead of returning the block; off by default so the block stands. Advances the "
+            "chain only — deployment rotation is unaffected."
+        ),
+    )
 
 
 class ZoneSelection(BaseModel):
