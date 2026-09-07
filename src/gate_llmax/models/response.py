@@ -135,6 +135,7 @@ class StreamChunk(BaseModel):
     api_provider: str | None = None
     hosting_provider: str | None = None
     region: str | None = None
+    final_model: str | None = Field(default=None, description="The model that actually served, on the final chunk; None until then.")
     duration_ms: int | None = None
     ttft_ms: int | None = None
 
@@ -326,6 +327,10 @@ class LLMCallRecord(BaseModel):
 
     usage: RawUsage = Field(default_factory=RawUsage)
     model: str = ""
+    final_model: str = Field(
+        default="",
+        description="The model that actually served; differs from `model` (asked for) only when routing fell back or resolved an alias.",
+    )
     deployment_id: UUID | None = None
     status: OutputStatus = OutputStatus.SUCCESS
     detail: str = Field(
