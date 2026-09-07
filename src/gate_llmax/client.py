@@ -504,6 +504,7 @@ class LLMClient:
             timeout=timeout,
             cache_call=self._resolve_cache_call(cache_call),
             cache_ttl=self._resolve_cache_ttl(cache_ttl),
+            plan=self._default_plan,
         )
         return self._direct_builder(request, "/v1/embeddings", "Embedding", EmbedResponse)
 
@@ -539,6 +540,7 @@ class LLMClient:
             timeout=timeout,
             cache_call=self._resolve_cache_call(cache_call),
             cache_ttl=self._resolve_cache_ttl(cache_ttl),
+            plan=self._default_plan,
         )
         return self._direct_builder(request, "/v1/audio/transcriptions", "Audio transcription", AudioResponse)
 
@@ -563,6 +565,7 @@ class LLMClient:
             duration_seconds=duration_seconds,
             max_tries=max_tries,
             timeout=timeout,
+            plan=self._default_plan,
         )
         return self._direct_builder(request, "/v1/audio/isolation", "Audio isolation", AudioIsolationResponse)
 
@@ -594,6 +597,7 @@ class LLMClient:
             watermark=watermark,
             max_tries=max_tries,
             timeout=timeout,
+            plan=self._default_plan,
         )
         return self._direct_builder(
             request, "/v1/audio/dubbing", "Dubbing", DubbingResponse, client_timeout=request_ceiling(request, tries=MEDIA_MAX_TRIES)
@@ -677,6 +681,7 @@ class LLMClient:
                 operation=self._resolve_operation(operation),
                 cache_call=use_cache,
                 cache_ttl=ttl,
+                plan=self._default_plan,
             )
             return TTSRequestBuilder(client=self, request=request, usage_callbacks=list(self._usage_callbacks), budget_check=self._budget)
         request = AudioGenRequest(
@@ -695,6 +700,7 @@ class LLMClient:
             operation=self._resolve_operation(operation),
             cache_call=use_cache,
             cache_ttl=ttl,
+            plan=self._default_plan,
         )
         return AudioGenRequestBuilder(client=self, request=request, usage_callbacks=list(self._usage_callbacks), budget_check=self._budget)
 
@@ -749,6 +755,7 @@ class LLMClient:
             operation=self._resolve_operation(operation),
             cache_call=self._resolve_cache_call(cache_call),
             cache_ttl=self._resolve_cache_ttl(cache_ttl),
+            plan=self._default_plan,
         )
         return VideoRequestBuilder(client=self, request=request, usage_callbacks=list(self._usage_callbacks), budget_check=self._budget)
 
@@ -780,6 +787,7 @@ class LLMClient:
             operation=self._resolve_operation(operation),
             max_tries=max_tries,
             timeout=timeout,
+            plan=self._default_plan,
         )
         return self._direct_builder(request, "/v1/responses", "Responses", ResponsesResponse, client_timeout=request_ceiling(request))
 
@@ -793,7 +801,12 @@ class LLMClient:
     ) -> DirectRequestBuilder[VisionLLMResponse]:
         """Fluent builder for vision OCR; ``.call(model)`` sends it. ``images`` are base64-encoded; ``operation`` tags the usage row."""
         request = VisionOCRRequest(
-            model="", images=images, operation=self._resolve_operation(operation), max_tries=max_tries, timeout=timeout
+            model="",
+            images=images,
+            operation=self._resolve_operation(operation),
+            max_tries=max_tries,
+            timeout=timeout,
+            plan=self._default_plan,
         )
         return self._direct_builder(request, "/v1/vision/ocr", "Vision OCR", VisionLLMResponse)
 
@@ -844,6 +857,7 @@ class LLMClient:
             operation=self._resolve_operation(operation),
             cache_call=self._resolve_cache_call(cache_call),
             cache_ttl=self._resolve_cache_ttl(cache_ttl),
+            plan=self._default_plan,
         )
         return ImageRequestBuilder(client=self, request=request, usage_callbacks=list(self._usage_callbacks), budget_check=self._budget)
 

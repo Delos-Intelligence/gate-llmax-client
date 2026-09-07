@@ -53,6 +53,15 @@ class CallControl(BaseModel):
             "chain only — deployment rotation is unaffected."
         ),
     )
+    plan: str | None = Field(
+        default=None,
+        description=(
+            "Named preset of hosting providers (a cost/infra tier, e.g. 'omicron'). On chat it "
+            "filters routing to the plan's hosting_providers (an explicit hosting_providers wins); "
+            "on the other modalities it is informative only — logged, but routing is unrestricted. "
+            "None = no plan."
+        ),
+    )
 
 
 class ZoneSelection(BaseModel):
@@ -245,14 +254,6 @@ class LLMRequest(CallControl):
             "admits its tier variants ('azure' includes 'azure-cheap'); a variant slug "
             "admits only itself ('azure-cheap' never widens to plain 'azure'). None or "
             "[] applies no filter. Composes with zone_selection (AND)."
-        ),
-    )
-    plan: str | None = Field(
-        default=None,
-        description=(
-            "Named preset of hosting providers (a cost/infra tier, e.g. 'omicron'). Resolves to the "
-            "plan's hosting_providers set server-side; an explicit hosting_providers takes precedence. "
-            "None = no plan."
         ),
     )
     seed_routing: str | None = Field(

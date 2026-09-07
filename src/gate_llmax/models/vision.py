@@ -18,6 +18,7 @@ class VisionOCRRequest(BaseModel):
     operation: str = Field(default="", description="Caller-supplied usage tag; echoed onto RawUsage and the usage log row.")
     max_tries: int | None = Field(default=None, description="Per-call upstream attempts, including the first.")
     timeout: int | None = Field(default=None, description="Per-call upstream timeout in seconds.")
+    plan: str | None = Field(default=None, description="Informative hosting-plan tag echoed onto the usage row; does not restrict routing.")
 
 
 class VisionPoint(BaseModel):
