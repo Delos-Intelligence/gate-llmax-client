@@ -50,6 +50,7 @@ class RawUsage(BaseModel):
     reasoning_tokens: int = 0  # subset of output_tokens spent on the reasoning chain; informational, not billed twice
     input_cost: float = 0.0
     output_cost: float = 0.0
+    estimate_gco2: float = 0.0  # modelled gCO2e for the call (tokens x region grid), not measured — set by the gateway
     model: str = ""
     estimated: bool = False
     api_provider: str = ""
@@ -81,6 +82,7 @@ class RawUsage(BaseModel):
             reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
             input_cost=round(self.input_cost + other.input_cost, ROUND),
             output_cost=round(self.output_cost + other.output_cost, ROUND),
+            estimate_gco2=round(self.estimate_gco2 + other.estimate_gco2, ROUND),
             model=self.model or other.model,
             estimated=self.estimated or other.estimated,
             api_provider=self.api_provider or other.api_provider,
