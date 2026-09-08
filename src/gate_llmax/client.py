@@ -517,6 +517,7 @@ class LLMClient:
         response_format: str = "text",
         prompt: str | None = None,
         temperature: float | None = None,
+        diarize: bool = False,
         max_tries: int | None = None,
         timeout: int | None = None,
         cache_call: bool | None = None,
@@ -527,6 +528,7 @@ class LLMClient:
         ``audio_b64`` is base64 audio; ``operation`` tags the usage row; ``language`` is a BCP-47
         hint; ``response_format`` is one of ``text`` / ``json`` / ``verbose_json`` / ``srt`` / ``vtt``.
         ``prompt`` biases decoding (domain vocabulary, spelling); ``temperature`` sets the sampling temperature.
+        ``diarize`` labels each segment with a speaker (Mistral voxtral only).
         """
         request = AudioRequest(
             model="",
@@ -536,6 +538,7 @@ class LLMClient:
             response_format=response_format,
             prompt=prompt,
             temperature=temperature,
+            diarize=diarize,
             max_tries=max_tries,
             timeout=timeout,
             cache_call=self._resolve_cache_call(cache_call),

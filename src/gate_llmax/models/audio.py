@@ -17,14 +17,16 @@ class AudioRequest(CallControl):
     response_format: str = Field(default="text", description="Output format: text, json, verbose_json, srt, vtt")
     prompt: str | None = Field(default=None, description="Optional text to bias decoding (domain vocabulary, spelling, style).")
     temperature: float | None = Field(default=None, description="Sampling temperature for transcription (0-1).")
+    diarize: bool = Field(default=False, description="Label each segment with a speaker; supported on Mistral voxtral only.")
 
 
 class TranscriptionSegment(BaseModel):
-    """One timestamped transcript segment (from ``verbose_json`` STT)."""
+    """One timestamped transcript segment."""
 
     start: float = Field(default=0.0, description="Segment start time in seconds.")
     end: float = Field(default=0.0, description="Segment end time in seconds.")
     text: str = Field(default="", description="Transcript text for this segment.")
+    speaker: str | None = Field(default=None, description="Speaker label, set only when ``diarize`` was requested.")
 
 
 class AudioResponse(LLMCallRecord):
@@ -33,5 +35,5 @@ class AudioResponse(LLMCallRecord):
     text: str = ""
     segments: list[TranscriptionSegment] = Field(
         default_factory=list,
-        description="Timestamped segments; populated only for ``verbose_json`` on whisper models, empty otherwise.",
+        description="Timestamped segments; empty unless the provider reports them.",
     )
