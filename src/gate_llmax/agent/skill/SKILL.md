@@ -59,6 +59,8 @@ await (client.request(prompt="weather in Paris?", operation="agent")
 
 Other media: `client.embed(...)`, `client.image(...)`, `client.audio("speech", ...)`, `client.transcribe(...)`, `client.vision(...)`, `client.video(...)` — each returns a builder; finish with `.call(model)`.
 
+To extend a generated clip by ~7s, pass `source_video=VideoSource(uri=resp.video_uri, deployment_id=str(resp.deployment_id))` to `client.video(...)` — the handle only lives while the provider keeps the file (Gemini: 2 days).
+
 ## Routing: hosting providers & plans
 
 A request can restrict *where* it runs:
