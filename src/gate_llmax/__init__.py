@@ -36,7 +36,7 @@ from gate_llmax.models.response import (
 )
 from gate_llmax.models.responses import ResponsesRequest, ResponsesResponse
 from gate_llmax.models.tts import TTSRequest, TTSResponse
-from gate_llmax.models.video import VideoRequest, VideoResponse
+from gate_llmax.models.video import VideoRequest, VideoResponse, VideoSource
 from gate_llmax.models.vision import VisionLine, VisionOCR, VisionOCRRequest, VisionPoint, VisionWord
 from gate_llmax.types import JsonDict, JsonValue, OutputStatus, ReasoningEffort
 
@@ -178,6 +178,7 @@ __all__ = [
     "VideoRequest",
     "VideoRequestBuilder",
     "VideoResponse",
+    "VideoSource",
     "VisionLLMResponse",
     "VisionLine",
     "VisionOCR",

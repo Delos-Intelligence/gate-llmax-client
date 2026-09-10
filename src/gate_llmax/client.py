@@ -46,7 +46,7 @@ from gate_llmax.models.usage import (
     TimeseriesPoint,
     UsageSample,
 )
-from gate_llmax.models.video import VideoAspectRatio, VideoDuration, VideoRequest, VideoResolution, VideoResponse
+from gate_llmax.models.video import VideoAspectRatio, VideoDuration, VideoRequest, VideoResolution, VideoResponse, VideoSource
 from gate_llmax.models.vision import VisionOCRRequest
 from gate_llmax.ratelimit import RateLimit, RateLimiter
 from gate_llmax.types import JsonDict, JsonValue, ReasoningEffort
@@ -718,13 +718,14 @@ class LLMClient:
         reference_images: list[str] | None = None,
         start_image: str | None = None,
         end_image: str | None = None,
+        source_video: VideoSource | None = None,
         max_tries: int | None = None,
         timeout: int | None = None,
         operation: str,
         cache_call: bool | None = None,
         cache_ttl: int | None = None,
     ) -> VideoRequestBuilder:
-        """Fluent builder for text/image-to-video; ``.call(model)`` sends it.
+        """Fluent builder for text/image-to-video and extension; ``.call(model)`` sends it.
 
         Args:
             prompt: Text prompt (ignored when ``start_image`` drives image-to-video).
@@ -735,6 +736,9 @@ class LLMClient:
             reference_images: Base64 style/content references (ignored with start/end frames).
             start_image: Base64 first frame (image-to-video).
             end_image: Base64 last frame.
+            source_video: Clip to extend by ~7s at 720p, built from a previous response's
+                ``video_uri`` and ``deployment_id``; ``duration_seconds``, ``resolution`` and
+                the image inputs are then ignored.
             max_tries: Per-call upstream attempts; overrides the model default.
             timeout: Per-call upstream timeout in seconds; overrides the model default.
             operation: Caller-supplied usage tag, echoed onto the usage log row.
@@ -753,6 +757,7 @@ class LLMClient:
             reference_images=reference_images,
             start_image=start_image,
             end_image=end_image,
+            source_video=source_video,
             max_tries=max_tries,
             timeout=timeout,
             operation=self._resolve_operation(operation),
