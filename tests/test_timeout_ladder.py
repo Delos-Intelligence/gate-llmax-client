@@ -68,3 +68,10 @@ def test_explicit_ceilings_are_honoured() -> None:
     client = LLMClient(api_key="k", base_url="http://gate", timeout=700.0, stream_read_timeout=800.0)
     assert client._timeout == 700.0
     assert client._stream_timeout.read == 800.0
+
+
+def test_a_transcription_ceiling_follows_the_request() -> None:
+    """The bug this guards: a 600s / one-try transcription still cut at the three-try default (1920s)."""
+    client = LLMClient(api_key="k", base_url="http://gate")
+    assert client.transcribe("YQ==", operation="o", timeout=600, max_tries=1).client_timeout == client_ceiling(600, 1)
+    assert client.transcribe("YQ==", operation="o").client_timeout == DEFAULT_TIMEOUT
