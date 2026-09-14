@@ -545,7 +545,12 @@ class LLMClient:
             cache_ttl=self._resolve_cache_ttl(cache_ttl),
             plan=self._default_plan,
         )
-        return self._direct_builder(request, "/v1/audio/transcriptions", "Audio transcription", AudioResponse)
+        # Like chat and audio generation: a request that sets its own ``timeout`` / ``max_tries``
+        # moves the client ceiling with it. Left at the default, a 600s/1-try transcription
+        # still waited the whole three-try ladder (1920s) on a stuck call.
+        return self._direct_builder(
+            request, "/v1/audio/transcriptions", "Audio transcription", AudioResponse, client_timeout=request_ceiling(request)
+        )
 
     def isolation(
         self,
