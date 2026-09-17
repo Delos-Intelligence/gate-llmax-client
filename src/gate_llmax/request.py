@@ -10,7 +10,9 @@ from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar, cast, get_origin,
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
+from gate_llmax.byok import provider_key_scope
 from gate_llmax.models.audio_gen import AudioGenRequest
+from gate_llmax.models.byok import ByokCredential
 from gate_llmax.models.images import ImageData, ImageRequest, ImageResponse
 from gate_llmax.models.messages import Message, TextMessage
 from gate_llmax.models.request import (
@@ -271,6 +273,7 @@ class MediaBuilder[ResponseT: LLMCallRecord](BaseModel):
     callbacks: list[Callable[[ResponseT], Awaitable[None]]] = Field(default_factory=list)
     usage_callbacks: list[UsageCallback] = Field(default_factory=list)
     budget_check: BudgetCheck | None = None
+    byok: ByokCredential | None = None
 
     def callback(self, *callbacks: Callable[[ResponseT], Awaitable[None]]) -> Self:
         """Register async callbacks fired with the full response (awaited in order)."""
@@ -286,6 +289,17 @@ class MediaBuilder[ResponseT: LLMCallRecord](BaseModel):
         """Register a pre-call budget gate; a False result denies the call with ``LLMBudgetError``."""
         self.budget_check = check
         return self
+
+    def with_provider_key(self, api_key: str, *, endpoint: str | None = None, api_version: str | None = None) -> Self:
+        """BYOK: send this call on the caller's own upstream key (Gate bills nothing); an endpoint is allowlist-gated."""
+        self.byok = ByokCredential(api_key=api_key, endpoint=endpoint, api_version=api_version)
+        return self
+
+    async def _scoped_stream[T](self, source: AsyncIterator[T]) -> AsyncIterator[T]:
+        """Iterate a client stream with the BYOK credential bound for the whole connection."""
+        with provider_key_scope(self.byok):
+            async for item in source:
+                yield item
 
     async def _gate_budget(self) -> None:
         if self.budget_check is not None and not await self.budget_check():
@@ -517,7 +531,8 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         """
         await self._gate_budget()
         request = self._build_request(model, stream=False)
-        response = await self.client._send(request, priority=priority)  # noqa: SLF001
+        with provider_key_scope(self.byok):
+            response = await self.client._send(request, priority=priority)  # noqa: SLF001
         self._apply_cast_json(response)
         if not disable_usage and self.on_usage is not None:
             await self.on_usage(response.usage)
@@ -592,7 +607,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         client_paces = smooth and not server_side
         final_usage: RawUsage | None = None
         try:
-            async for chunk in self.client._stream(request, priority=priority):  # noqa: SLF001
+            async for chunk in self._scoped_stream(self.client._stream(request, priority=priority)):  # noqa: SLF001
                 if chunk.input_tokens is not None or chunk.output_tokens is not None or chunk.api_provider is not None:
                     final_usage = RawUsage(
                         input_tokens=chunk.input_tokens or 0,
@@ -672,7 +687,8 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             self.client._send(self._build_request(m, stream=False))  # noqa: SLF001
             for m in models
         ]
-        responses = await execute_multicall(coros, models, timeout=timeout)  # ty:ignore[invalid-argument-type]
+        with provider_key_scope(self.byok):
+            responses = await execute_multicall(coros, models, timeout=timeout)  # ty:ignore[invalid-argument-type]
         for response in responses:
             self._apply_cast_json(response)
         if self.on_usage is not None:
@@ -737,7 +753,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             seed_routing=self.seed_routing,
         )
         estimated_input: int | None = None
-        async for frame in self.client._stream_batch(request):  # noqa: SLF001
+        async for frame in self._scoped_stream(self.client._stream_batch(request)):  # noqa: SLF001
             self._apply_cast_json(frame.response)
             if self.on_usage is not None:
                 if frame.response.status == OutputStatus.TIMEOUT:
@@ -790,7 +806,8 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             fallback_on_content_policy=self.fallback_on_content_policy,
             seed_routing=self.seed_routing,
         )
-        responses = await self.client._send_batch(batch)  # noqa: SLF001
+        with provider_key_scope(self.byok):
+            responses = await self.client._send_batch(batch)  # noqa: SLF001
         for response in responses:
             self._apply_cast_json(response)
         if self.on_usage is not None:
@@ -889,7 +906,8 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             fallback_on_content_policy=self.fallback_on_content_policy,
             seed_routing=self.seed_routing,
         )
-        response = await self.client._send(request)  # noqa: SLF001
+        with provider_key_scope(self.byok):
+            response = await self.client._send(request)  # noqa: SLF001
         self._apply_cast_json(response)
         if self.on_usage is not None:
             await self.on_usage(response.usage)
@@ -1280,7 +1298,8 @@ class ImageRequestBuilder(MediaBuilder[ImageResponse]):
     async def call(self, model: str) -> ImageResponse:
         """Generate or edit images with ``model`` (edit mode when ``images`` was set)."""
         await self._gate_budget()
-        response = await self.client._send_images(self.request.model_copy(update={"model": model}))  # noqa: SLF001
+        with provider_key_scope(self.byok):
+            response = await self.client._send_images(self.request.model_copy(update={"model": model}))  # noqa: SLF001
         await self._fire(response)
         return response
 
@@ -1294,7 +1313,7 @@ class ImageRequestBuilder(MediaBuilder[ImageResponse]):
         request = self.request.model_copy(update={"model": model})
         frames: list[ImageData] = []
         terminal_usage: RawUsage | None = None
-        async for chunk in self.client._stream_images(request):  # noqa: SLF001
+        async for chunk in self._scoped_stream(self.client._stream_images(request)):  # noqa: SLF001
             if isinstance(chunk, ImageData):
                 frames.append(chunk)
                 yield chunk
@@ -1360,7 +1379,8 @@ class TTSRequestBuilder(MediaBuilder[BaseAudioResponse]):
     async def call(self, model: str) -> BaseAudioResponse:
         """Synthesize speech with ``model`` (base64-encoded audio + usage)."""
         await self._gate_budget()
-        response = await self.client._send_tts(self.request.model_copy(update={"model": model}))  # noqa: SLF001
+        with provider_key_scope(self.byok):
+            response = await self.client._send_tts(self.request.model_copy(update={"model": model}))  # noqa: SLF001
         await self._fire(response)
         return response
 
@@ -1372,7 +1392,7 @@ class TTSRequestBuilder(MediaBuilder[BaseAudioResponse]):
         """Stream raw speech bytes; fire usage (``input_tokens == len(text)``) at completion."""
         await self._gate_budget()
         request = self.request.model_copy(update={"model": model})
-        async for chunk in self.client._stream_tts(request):  # noqa: SLF001
+        async for chunk in self._scoped_stream(self.client._stream_tts(request)):  # noqa: SLF001
             yield chunk
         synth = TTSResponse(
             model=request.model,
@@ -1391,7 +1411,8 @@ class AudioGenRequestBuilder(MediaBuilder[BaseAudioResponse]):
     async def call(self, model: str) -> BaseAudioResponse:
         """Generate music / sound effects / dialogue with ``model`` (base64-encoded audio + usage)."""
         await self._gate_budget()
-        response = await self.client._send_audio_gen(self.request.model_copy(update={"model": model}))  # noqa: SLF001
+        with provider_key_scope(self.byok):
+            response = await self.client._send_audio_gen(self.request.model_copy(update={"model": model}))  # noqa: SLF001
         await self._fire(response)
         return response
 
@@ -1409,7 +1430,8 @@ class VideoRequestBuilder(MediaBuilder[VideoResponse]):
         """Generate a video with ``model`` and parse the response (base64-encoded video + usage)."""
         await self._gate_budget()
         request = self.request.model_copy(update={"model": model})
-        response = await self.client._send_video(request)  # noqa: SLF001
+        with provider_key_scope(self.byok):
+            response = await self.client._send_video(request)  # noqa: SLF001
         await self._fire(response)
         return response
 
