@@ -28,6 +28,7 @@ class ModelPurpose(StrEnum):
     IMAGES = "images"
     TTS = "tts"
     AUDIO_ISOLATION = "audio_isolation"
+    SPEECH_TO_SPEECH = "speech_to_speech"
     DUBBING = "dubbing"
     VIDEO = "video"
     DECISION = "decision"
