@@ -15,6 +15,7 @@ from typing import Any, Literal, Self, overload
 import httpx
 from pydantic import BaseModel
 
+from gate_llmax.byok import inject_byok_header
 from gate_llmax.models.audio import AudioRequest, AudioResponse
 from gate_llmax.models.audio_gen import AudioGenMode, AudioGenRequest, AudioGenResponse, AudioMode, DialogueTurn
 from gate_llmax.models.audio_isolation import AudioIsolationRequest, AudioIsolationResponse
@@ -228,7 +229,12 @@ class LLMClient:
             base_url=self._base_url,
             headers={"X-Gate-Key": self._api_key},
             timeout=httpx.Timeout(timeout, connect=CONNECT_TIMEOUT, pool=POOL_TIMEOUT),
+            event_hooks={"request": [inject_byok_header]},
         )
+        if httpx_aclient is not None:
+            hooks = httpx_aclient.event_hooks.setdefault("request", [])
+            if inject_byok_header not in hooks:
+                hooks.append(inject_byok_header)
         self._stream_timeout = httpx.Timeout(
             stream_read_timeout,
             connect=CONNECT_TIMEOUT,
