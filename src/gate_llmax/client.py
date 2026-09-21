@@ -20,6 +20,7 @@ from gate_llmax.models.audio import AudioRequest, AudioResponse
 from gate_llmax.models.audio_gen import AudioGenMode, AudioGenRequest, AudioGenResponse, AudioMode, DialogueTurn
 from gate_llmax.models.audio_isolation import AudioIsolationRequest, AudioIsolationResponse
 from gate_llmax.models.config import ExtraAttributeName, FallbackHealthRow, ModelInfo, ModelPlanRow, PlanInfo, ResolveResponse
+from gate_llmax.models.decision import DecisionQuestion, DecisionRequest, DecisionResponse
 from gate_llmax.models.dubbing import DubbingRequest, DubbingResponse
 from gate_llmax.models.embed import EmbedRequest, EmbedResponse
 from gate_llmax.models.images import AspectRatio, ImageData, ImageQuality, ImageRequest, ImageResponse, ImageSize
@@ -513,6 +514,35 @@ class LLMClient:
             plan=self._default_plan,
         )
         return self._direct_builder(request, "/v1/embeddings", "Embedding", EmbedResponse)
+
+    def decision(
+        self,
+        state: str | JsonDict | list[JsonValue],
+        *,
+        questions: dict[str, DecisionQuestion],
+        operation: str,
+        max_tries: int | None = None,
+        timeout: int | None = None,
+        cache_call: bool | None = None,
+        cache_ttl: int | None = None,
+    ) -> DirectRequestBuilder[DecisionResponse]:
+        """Fluent builder for a System One decision (TypeSafe Jev); ``.call(model)`` sends it.
+
+        ``state`` is the program state to decide over; ``questions`` maps a key to a typed
+        ``DecisionQuestion`` (choice/score/noul). ``operation`` tags the usage row.
+        """
+        request = DecisionRequest(
+            model="",
+            state=state,
+            questions=questions,
+            operation=self._resolve_operation(operation),
+            max_tries=max_tries,
+            timeout=timeout,
+            cache_call=self._resolve_cache_call(cache_call),
+            cache_ttl=self._resolve_cache_ttl(cache_ttl),
+            plan=self._default_plan,
+        )
+        return self._direct_builder(request, "/v1/decisions", "Decision", DecisionResponse)
 
     def transcribe(
         self,

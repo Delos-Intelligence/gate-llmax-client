@@ -19,6 +19,7 @@ from gate_llmax.models.config import (
     ResolvedDeployment,
     ResolveResponse,
 )
+from gate_llmax.models.decision import DecisionAnswer, DecisionQuestion, DecisionRequest, DecisionResponse
 from gate_llmax.models.dubbing import DubbingRequest, DubbingResponse
 from gate_llmax.models.embed import EmbedObject, EmbedRequest, EmbedResponse
 from gate_llmax.models.images import ImageData, ImageRequest, ImageResponse
@@ -104,6 +105,10 @@ __all__ = [
     "BudgetCheck",
     "ByokCredential",
     "CallControl",
+    "DecisionAnswer",
+    "DecisionQuestion",
+    "DecisionRequest",
+    "DecisionResponse",
     "DeploymentInfo",
     "DeploymentStatus",
     "DialogueTurn",

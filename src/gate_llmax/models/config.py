@@ -30,6 +30,7 @@ class ModelPurpose(StrEnum):
     AUDIO_ISOLATION = "audio_isolation"
     DUBBING = "dubbing"
     VIDEO = "video"
+    DECISION = "decision"
 
 
 class ModelCapabilities(BaseModel):
