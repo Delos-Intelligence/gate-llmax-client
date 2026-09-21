@@ -948,6 +948,106 @@ class LLMClient:
         _raise_for_status(response)
         return list(response.json())
 
+    async def mcp_usage_errors(
+        self,
+        *,
+        since: str = "24h",
+        until: str | None = None,
+        servers: list[str] | None = None,
+        tools: list[str] | None = None,
+        kinds: list[str] | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """GET /v1/mcp/usage/errors — MCP tool-call failures grouped by server, tool and kind.
+
+        ``servers`` filters by server *slug*; an unknown slug is a 404 rather than an empty
+        result, so a typo can't read as "nothing failed there". Requires a ``dev`` key.
+        """
+        params: list[tuple[str, str | int | float | None]] = [("since", since), ("limit", limit)]
+        if until:
+            params.append(("until", until))
+        params += [("server", s) for s in servers or []]
+        params += [("tool", t) for t in tools or []]
+        params += [("kind", k) for k in kinds or []]
+        response = await self._http.get("/v1/mcp/usage/errors", params=params)
+        _raise_for_status(response)
+        return dict(response.json())
+
+    async def mcp_usage_samples(
+        self,
+        *,
+        since: str = "24h",
+        until: str | None = None,
+        servers: list[str] | None = None,
+        tools: list[str] | None = None,
+        statuses: list[str] | None = None,
+        kinds: list[str] | None = None,
+        search: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """GET /v1/mcp/usage/samples — individual MCP tool calls, newest first.
+
+        ``search`` matches a substring of the recorded detail. Requires a ``dev`` key.
+        """
+        params: list[tuple[str, str | int | float | None]] = [("since", since), ("limit", limit)]
+        if until:
+            params.append(("until", until))
+        if search:
+            params.append(("search", search))
+        params += [("server", s) for s in servers or []]
+        params += [("tool", t) for t in tools or []]
+        params += [("status", s) for s in statuses or []]
+        params += [("kind", k) for k in kinds or []]
+        response = await self._http.get("/v1/mcp/usage/samples", params=params)
+        _raise_for_status(response)
+        return list(response.json())
+
+    async def mcp_usage_breakdown(
+        self,
+        *,
+        since: str | None = None,
+        until: str | None = None,
+        group: str = "server",
+        servers: list[str] | None = None,
+        tools: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """GET /v1/mcp/usage/breakdown — call volume, errors and latency per server or per tool.
+
+        ``group="server+tool"`` splits each server by the tool called. Requires a ``dev`` key.
+        """
+        params: list[tuple[str, str | int | float | None]] = [("group", group)]
+        if since:
+            params.append(("since", since))
+        if until:
+            params.append(("until", until))
+        params += [("server", s) for s in servers or []]
+        params += [("tool", t) for t in tools or []]
+        response = await self._http.get("/v1/mcp/usage/breakdown", params=params)
+        _raise_for_status(response)
+        return list(response.json())
+
+    async def mcp_usage_timeseries(
+        self,
+        *,
+        since: str = "24h",
+        until: str | None = None,
+        interval: str = "1h",
+        servers: list[str] | None = None,
+        tools: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """GET /v1/mcp/usage/timeseries — MCP calls, failures and latency per time bucket.
+
+        ``interval`` is a bucket width (``5m``, ``1h``, ``1d``). Requires a ``dev`` key.
+        """
+        params: list[tuple[str, str | int | float | None]] = [("since", since), ("interval", interval)]
+        if until:
+            params.append(("until", until))
+        params += [("server", s) for s in servers or []]
+        params += [("tool", t) for t in tools or []]
+        response = await self._http.get("/v1/mcp/usage/timeseries", params=params)
+        _raise_for_status(response)
+        return list(response.json())
+
     async def usage_errors(
         self,
         *,
