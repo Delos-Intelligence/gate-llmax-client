@@ -1030,19 +1030,137 @@ async def list_mcp_servers() -> list[dict[str, Any]]:
 
 
 @mcp.tool()
-async def mcp_usage(since: str | None = None) -> list[dict[str, Any]]:
-    """Free. Per-MCP-server tool-call volume, error rate and latency — the MCP counterpart of ``usage_stats``.
+async def mcp_usage(
+    since: str | None = None,
+    until: str | None = None,
+    group: str = "server",
+    servers: list[str] | None = None,
+    tools: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Free. Per-MCP tool-call volume, error count and latency — the MCP counterpart of ``usage_stats``.
+
+    ``group="server+tool"`` is the one that finds a looping connector: a partner rarely breaks
+    as a whole, one of its tools does, and summing its tools together hides exactly that.
 
     Args:
-        since: ISO timestamp lower bound (e.g. ``2026-09-01T00:00:00Z``). Omit for all-time.
+        since: Duration (``24h``, ``7d``) or ISO timestamp. Omit for all-time.
+        until: ISO timestamp upper bound. Omit for now.
+        group: ``server`` (default) or ``server+tool``.
+        servers: Server **slugs** to keep. An unknown slug is an error, not an empty result.
+        tools: Tool names to keep.
 
     Returns:
-        One row per server ``{mcp_server_id/slug, calls, errors, ...}`` from get_mcp_usage_summary.
-        Needs a **dev** key.
+        Rows ``{server, calls, errors, avg_latency_ms, last_seen}``, busiest first, plus
+        ``tool`` when grouped by tool. Needs a **dev** key.
     """
     try:
         async with _client() as client:
-            return await client.mcp_usage(since=since)
+            return await client.mcp_usage_breakdown(since=since, until=until, group=group, servers=servers, tools=tools)
+    except LLMError as exc:
+        return [{"error": _dev_error(exc)}]
+
+
+@mcp.tool()
+async def mcp_usage_errors(
+    since: str = "24h",
+    until: str | None = None,
+    servers: list[str] | None = None,
+    tools: list[str] | None = None,
+    kinds: list[str] | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Free. MCP tool-call failures grouped by server, tool and kind, worst first — the counterpart of ``usage_errors``.
+
+    Turns "8 errors on HubSpot" into "HubSpot, create_contact, tool_error, 8 times since
+    Tuesday 14:00, last message: invalid_grant". ``kind`` separates a partner that never
+    answered (``transport``) from one that answered with an error (``tool_error``) — null on
+    calls logged before that distinction was recorded.
+
+    Args:
+        since: Duration (``24h``, ``7d``, ``90m``) or ISO timestamp. Max 90 days.
+        until: ISO timestamp upper bound. Omit for now.
+        servers: Server **slugs** to keep. An unknown slug is an error, not an empty result.
+        tools: Tool names to keep.
+        kinds: ``transport`` / ``tool_error``.
+        limit: Maximum groups (they are sorted worst first).
+
+    Returns:
+        ``{window_from, window_to, total_failures, by_kind, groups}``; each group carries
+        ``calls``, ``first_seen``/``last_seen``, a ``sample_detail`` message and a
+        ``sample_log_id``. Needs a **dev** key.
+    """
+    try:
+        async with _client() as client:
+            return await client.mcp_usage_errors(since=since, until=until, servers=servers, tools=tools, kinds=kinds, limit=limit)
+    except LLMError as exc:
+        return {"error": _dev_error(exc)}
+
+
+@mcp.tool()
+async def mcp_usage_samples(
+    since: str = "24h",
+    until: str | None = None,
+    servers: list[str] | None = None,
+    tools: list[str] | None = None,
+    statuses: list[str] | None = None,
+    kinds: list[str] | None = None,
+    search: str | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Free. Individual MCP tool calls, newest first — the counterpart of ``usage_samples``.
+
+    Where ``mcp_usage_errors`` groups, this shows the calls themselves: what was called, when,
+    how long it took and what came back. Successes are included; pass ``statuses=["error"]``
+    for failures alone.
+
+    Args:
+        since: Duration or ISO timestamp. Max 90 days.
+        until: ISO timestamp upper bound. Omit for now.
+        servers: Server **slugs** to keep. An unknown slug is an error, not an empty result.
+        tools: Tool names to keep.
+        statuses: ``ok`` / ``error``.
+        kinds: ``transport`` / ``tool_error``.
+        search: Substring the recorded detail must contain.
+        limit: Maximum rows (max 200).
+
+    Returns:
+        Rows ``{id, at, server, tool, status, kind, latency_ms, detail}``. Needs a **dev** key.
+    """
+    try:
+        async with _client() as client:
+            return await client.mcp_usage_samples(
+                since=since, until=until, servers=servers, tools=tools, statuses=statuses, kinds=kinds, search=search, limit=limit
+            )
+    except LLMError as exc:
+        return [{"error": _dev_error(exc)}]
+
+
+@mcp.tool()
+async def mcp_usage_timeseries(
+    since: str = "24h",
+    until: str | None = None,
+    interval: str = "1h",
+    servers: list[str] | None = None,
+    tools: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Free. MCP calls, failures and latency per time bucket — the counterpart of ``usage_timeseries``.
+
+    The tool for "did it start this morning or has it been broken for ten days" — which is the
+    difference between a partner that changed its API and one nobody ever finished wiring up.
+
+    Args:
+        since: Duration or ISO timestamp. Max 90 days.
+        until: ISO timestamp upper bound. Omit for now.
+        interval: Bucket width — ``5m``, ``1h``, ``1d``. Window is capped at 500 buckets.
+        servers: Server **slugs** to keep. An unknown slug is an error, not an empty result.
+        tools: Tool names to keep.
+
+    Returns:
+        Rows ``{t, calls, errors, avg_latency_ms}``, oldest first. Needs a **dev** key.
+    """
+    try:
+        async with _client() as client:
+            return await client.mcp_usage_timeseries(since=since, until=until, interval=interval, servers=servers, tools=tools)
     except LLMError as exc:
         return [{"error": _dev_error(exc)}]
 
