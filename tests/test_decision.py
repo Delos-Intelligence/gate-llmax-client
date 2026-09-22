@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
+
 import gate_llmax.client as client_mod
-from gate_llmax import DecisionQuestion, DecisionResponse, LLMClient
+from gate_llmax import DecisionAnswer, DecisionQuestion, DecisionResponse, LLMClient
 from gate_llmax.models.response import RawUsage
 from gate_llmax.types import OutputStatus
 
@@ -45,3 +47,31 @@ def test_decision_answer_choice_fields() -> None:
     )
     assert resp.answers["category"].choice == "billing"
     assert resp.answers["category"].probabilities == {"billing": 0.8, "other": 0.2}
+
+
+def test_decision_question_builders() -> None:
+    c = DecisionQuestion.choice("Which folder?", {"work": "job", "promo": "marketing"})
+    assert c.type == "choice"
+    assert c.criteria == {"work": "job", "promo": "marketing"}
+
+    s = DecisionQuestion.score("How complex?", ["trivial", "simple", "hard"])
+    assert s.type == "score"
+    assert s.criteria == ["trivial", "simple", "hard"]
+
+    n = DecisionQuestion.noul("Is it spam?")
+    assert n.type == "noul"
+    assert n.criteria is None
+
+
+def test_choice_rejects_list_criteria() -> None:
+    # A bare list is rejected server-side as NO_VALIDATION; fail early and clearly instead.
+    with pytest.raises(ValueError, match="dict of id"):
+        DecisionQuestion(type="choice", instructions="pick", criteria=["a", "b"])
+
+
+def test_decision_answer_is_yes() -> None:
+    assert DecisionAnswer(type="noul", noul=0.9).is_yes()
+    assert not DecisionAnswer(type="noul", noul=0.2).is_yes()
+    assert DecisionAnswer(type="noul", noul=0.6).is_yes(threshold=0.5)
+    assert not DecisionAnswer(type="noul", noul=0.6).is_yes(threshold=0.7)
+    assert not DecisionAnswer(type="noul", noul=None).is_yes()
