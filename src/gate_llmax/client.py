@@ -923,10 +923,23 @@ class LLMClient:
         return [ExtraAttributeName.model_validate(item) for item in response.json()]
 
     async def list_plans(self) -> list[PlanInfo]:
-        """GET /v1/plans — the hosting plans (cost/infra tiers). Requires a ``dev`` API key (403 otherwise)."""
+        """GET /v1/plans — the hosting plans (cost/infra tiers)."""
         response = await self._http.get("/v1/plans")
         _raise_for_status(response)
         return [PlanInfo.model_validate(item) for item in response.json()]
+
+    async def plan_models(self, plan: str, *, purpose: str | None = None) -> list[ModelInfo]:
+        """GET /v1/plans/{plan}/models — models reachable on ``plan`` as full ModelInfo, optionally filtered by purpose."""
+        params = {"purpose": purpose} if purpose is not None else None
+        response = await self._http.get(f"/v1/plans/{plan}/models", params=params)
+        _raise_for_status(response)
+        return [ModelInfo.model_validate(item) for item in response.json()]
+
+    async def available_models(self, *, purpose: str | None = None) -> list[ModelInfo]:
+        """Models reachable on this client's configured plan (``default_plan``), as full ModelInfo."""
+        if self._default_plan is None:
+            raise ValueError("available_models() needs the client to be built with a default_plan")
+        return await self.plan_models(self._default_plan, purpose=purpose)
 
     async def verify_profile(
         self,
@@ -1306,8 +1319,8 @@ class LLMClient:
     async def model_plan_matrix(self) -> list[ModelPlanRow]:
         """GET /v1/model-plan-matrix — every model and the plans it is reachable on.
 
-        Requires a ``dev`` API key (403 otherwise). Use it to build a ``call_prefer([...])``
-        list covering every plan an app serves (see the ``gate-llmax agent`` MCP ``prefer_list`` tool).
+        Use it to build a ``call_prefer([...])`` list covering every plan an app serves
+        (see the ``gate-llmax agent`` MCP ``prefer_list`` tool).
         """
         response = await self._http.get("/v1/model-plan-matrix")
         _raise_for_status(response)
