@@ -31,6 +31,7 @@ class ModelPurpose(StrEnum):
     DUBBING = "dubbing"
     VIDEO = "video"
     DECISION = "decision"
+    OCR = "ocr"
 
 
 class ModelCapabilities(BaseModel):

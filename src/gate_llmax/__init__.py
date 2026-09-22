@@ -24,6 +24,7 @@ from gate_llmax.models.dubbing import DubbingRequest, DubbingResponse
 from gate_llmax.models.embed import EmbedObject, EmbedRequest, EmbedResponse
 from gate_llmax.models.images import ImageData, ImageRequest, ImageResponse
 from gate_llmax.models.messages import ImageMessage, Message, MessageRole, TextMessage
+from gate_llmax.models.ocr import OCRDocument, OCRPage, OCRRequest, OCRResponse
 from gate_llmax.models.request import BestTarget, CallControl, RequestSpecifics, ResolveRequest, ZoneSelection
 from gate_llmax.models.response import (
     BaseAudioResponse,
@@ -154,6 +155,10 @@ __all__ = [
     "ModelPlanRow",
     "ModelPurpose",
     "MulticallStreamFrame",
+    "OCRDocument",
+    "OCRPage",
+    "OCRRequest",
+    "OCRResponse",
     "OnUsage",
     "OutputStatus",
     "PlanInfo",

@@ -25,6 +25,7 @@ from gate_llmax.models.dubbing import DubbingRequest, DubbingResponse
 from gate_llmax.models.embed import EmbedRequest, EmbedResponse
 from gate_llmax.models.images import AspectRatio, ImageData, ImageQuality, ImageRequest, ImageResponse, ImageSize
 from gate_llmax.models.messages import Message, MessageRole, TextMessage
+from gate_llmax.models.ocr import OCRDocument, OCRRequest, OCRResponse
 from gate_llmax.models.request import LLMRequest, RequestSpecifics, ResolveRequest, ZoneSelection
 from gate_llmax.models.response import (
     LLMCallRecord,
@@ -543,6 +544,33 @@ class LLMClient:
             plan=self._default_plan,
         )
         return self._direct_builder(request, "/v1/decisions", "Decision", DecisionResponse)
+
+    def ocr(
+        self,
+        document: OCRDocument,
+        *,
+        operation: str,
+        pages: list[int] | None = None,
+        include_images: bool = False,
+        max_tries: int | None = None,
+        timeout: int | None = None,
+        cache_call: bool | None = None,
+        cache_ttl: int | None = None,
+    ) -> DirectRequestBuilder[OCRResponse]:
+        """Fluent builder for an OCR call; ``.call(model)`` sends it and returns per-page markdown."""
+        request = OCRRequest(
+            model="",
+            document=document,
+            pages=pages,
+            include_images=include_images,
+            operation=self._resolve_operation(operation),
+            max_tries=max_tries,
+            timeout=timeout,
+            cache_call=self._resolve_cache_call(cache_call),
+            cache_ttl=self._resolve_cache_ttl(cache_ttl),
+            plan=self._default_plan,
+        )
+        return self._direct_builder(request, "/v1/ocr", "OCR", OCRResponse)
 
     def transcribe(
         self,
