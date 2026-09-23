@@ -60,6 +60,7 @@ class RawUsage(BaseModel):
     ttft_ms: int | None = None
     operation: str = ""
     finish_reason: str = ""  # why generation stopped (stop/length/tool_calls/…); "length" on an empty answer means the cap was hit
+    native_finish_reason: str = ""  # the provider's own reason before OpenAI-vocab flattening (Anthropic "refusal", Gemini "RECITATION", …)
 
     @computed_field
     @property
@@ -92,6 +93,7 @@ class RawUsage(BaseModel):
             ttft_ms=self.ttft_ms if self.ttft_ms is not None else other.ttft_ms,
             operation=self.operation or other.operation,
             finish_reason=self.finish_reason or other.finish_reason,
+            native_finish_reason=self.native_finish_reason or other.native_finish_reason,
         )
 
 
@@ -127,6 +129,7 @@ class StreamChunk(BaseModel):
     reasoning: str = ""
     is_done: bool = False
     finish_reason: str | None = None
+    native_finish_reason: str | None = None  # the provider's own reason before OpenAI-vocab flattening; None until a terminal chunk
     input_tokens: int | None = None
     output_tokens: int | None = None
     cached_input_tokens: int | None = None
@@ -203,6 +206,7 @@ class StreamChunk(BaseModel):
         reasoning = ""
         is_done = False
         finish_reason = None
+        native_finish_reason = None
         input_tokens = None
         output_tokens = None
         tool_calls_delta = None
@@ -220,6 +224,8 @@ class StreamChunk(BaseModel):
             if choice.finish_reason:
                 is_done = True
                 finish_reason = choice.finish_reason
+                # OpenRouter reports the upstream's own reason here; keep it before it's flattened.
+                native_finish_reason = getattr(choice, "native_finish_reason", None)
 
         cached_input_tokens = None
         reasoning_tokens = None
@@ -238,6 +244,7 @@ class StreamChunk(BaseModel):
             reasoning=reasoning,
             is_done=is_done,
             finish_reason=finish_reason,
+            native_finish_reason=native_finish_reason,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cached_input_tokens=cached_input_tokens,
