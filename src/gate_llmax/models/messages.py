@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from enum import StrEnum
 from typing import Any, Self
 
@@ -9,6 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..types import JsonDict
 from .response import ToolCall
+
+logger = logging.getLogger(__name__)
 
 
 class MessageRole(StrEnum):
@@ -35,6 +38,10 @@ class ImageMessage(BaseModel):
 
     b64: str | None = None
     url: str | None = None
+    media_type: str | None = Field(
+        default=None,
+        description="MIME type of the image (e.g. image/png); the Gate server still sniffs the bytes if unset.",
+    )
     detail: str | None = Field(
         default=None,
         description='Forwarded to OpenAI-style APIs as image detail (e.g. "auto", "low", "high").',
@@ -132,18 +139,38 @@ def _content_blocks(content: Any) -> list[TextMessage | ImageMessage]:
     blocks: list[TextMessage | ImageMessage] = []
     for part in content:
         if not isinstance(part, dict):
+            logger.warning("ignoring non-dict content part: %r", type(part).__name__)
             continue
-        if part.get("type") == "text":
+        part_type = part.get("type")
+        if part_type == "text":
             blocks.append(TextMessage(text=part.get("text", "")))
-        elif part.get("type") == "image_url":
+        elif part_type == "image_url":
             image_url = part.get("image_url") or {}
             url = image_url.get("url", "")
             detail = image_url.get("detail")
             if url.startswith("data:") and ";base64," in url:
-                blocks.append(ImageMessage(b64=url.split(";base64,", 1)[1], detail=detail))
+                header, b64 = url.split(";base64,", 1)
+                blocks.append(ImageMessage(b64=b64, media_type=header.removeprefix("data:") or None, detail=detail))
             elif url:
                 blocks.append(ImageMessage(url=url, detail=detail))
+        elif part_type == "image":
+            block = _anthropic_image_block(part.get("source") or {})
+            if block is not None:
+                blocks.append(block)
+            else:
+                logger.warning("ignoring unparseable anthropic image part: %r", part.get("source"))
+        else:
+            logger.warning("ignoring unknown content part type: %r", part_type)
     return blocks
+
+
+def _anthropic_image_block(source: dict[str, Any]) -> ImageMessage | None:
+    """Parse an Anthropic-style image ``source`` ({"type": "base64"|"url", ...}) into an ImageMessage."""
+    if source.get("type") == "base64" and source.get("data"):
+        return ImageMessage(b64=source["data"], media_type=source.get("media_type"))
+    if source.get("type") == "url" and source.get("url"):
+        return ImageMessage(url=source["url"])
+    return None
 
 
 def content_block_to_openai(block: TextMessage | ImageMessage) -> JsonDict:
@@ -153,9 +180,10 @@ def content_block_to_openai(block: TextMessage | ImageMessage) -> JsonDict:
     detail = block.detail or "high"
     if block.url is not None:
         return {"type": "image_url", "image_url": {"url": block.url, "detail": detail}}
+    media_type = block.media_type or "image/jpeg"
     return {
         "type": "image_url",
-        "image_url": {"url": f"data:image/jpeg;base64,{block.b64}", "detail": detail},
+        "image_url": {"url": f"data:{media_type};base64,{block.b64}", "detail": detail},
     }
 
 
