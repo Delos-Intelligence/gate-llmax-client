@@ -695,6 +695,10 @@ class LLMClient:
         voice: str = ...,
         response_format: TTSFormat = ...,
         speed: float = ...,
+        speaker_boost: bool = ...,
+        stability: float | None = ...,
+        similarity_boost: float | None = ...,
+        style: float | None = ...,
         max_tries: int | None = ...,
         timeout: int | None = ...,
         operation: str,
@@ -730,6 +734,10 @@ class LLMClient:
         voice: str = "alloy",
         response_format: TTSFormat = "mp3",
         speed: float = 1.0,
+        speaker_boost: bool = False,
+        stability: float | None = None,
+        similarity_boost: float | None = None,
+        style: float | None = None,
         prompt: str = "",
         inputs: list[DialogueTurn] | None = None,
         music_length_ms: int = 30000,
@@ -746,7 +754,8 @@ class LLMClient:
     ) -> TTSRequestBuilder | AudioGenRequestBuilder:
         """Fluent builder for audio; ``.call(model)`` sends it. ``mode`` picks speech vs generative.
 
-        ``speech`` → TTS (``text`` / ``voice`` / ``response_format`` / ``speed``; also supports
+        ``speech`` → TTS (``text`` / ``voice`` / ``response_format`` / ``speed``, plus the ElevenLabs
+        voice settings ``speaker_boost`` / ``stability`` / ``similarity_boost`` / ``style``; also supports
         ``.call_stream``). ``music`` / ``sound_effects`` → ``prompt`` (+ length / duration knobs).
         ``dialogue`` → ``inputs`` speaker turns.
         """
@@ -759,6 +768,10 @@ class LLMClient:
                 voice=voice,
                 response_format=response_format,
                 speed=speed,
+                speaker_boost=speaker_boost,
+                stability=stability,
+                similarity_boost=similarity_boost,
+                style=style,
                 max_tries=max_tries,
                 timeout=timeout,
                 operation=self._resolve_operation(operation),

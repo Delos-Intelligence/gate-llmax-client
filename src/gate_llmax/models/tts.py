@@ -21,6 +21,15 @@ class TTSRequest(CallControl):
     response_format: TTSFormat = "mp3"
     speed: float = Field(default=1.0, description="Playback speed multiplier (provider-specific range).")
     speaker_boost: bool = Field(default=False, description="ElevenLabs `use_speaker_boost` — boost similarity to the voice.")
+    stability: float | None = Field(
+        default=None, ge=0.0, le=1.0, description="ElevenLabs `stability` — high is steadier, low more expressive; None keeps the voice's."
+    )
+    similarity_boost: float | None = Field(
+        default=None, ge=0.0, le=1.0, description="ElevenLabs `similarity_boost` — adherence to the original voice; None keeps the voice's."
+    )
+    style: float | None = Field(
+        default=None, ge=0.0, le=1.0, description="ElevenLabs `style` — exaggerates the voice's delivery; None keeps the voice's."
+    )
 
 
 class TTSResponse(BaseAudioResponse):
