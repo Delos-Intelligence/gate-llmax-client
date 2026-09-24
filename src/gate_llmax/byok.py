@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 
 import httpx
 
-from gate_llmax.models.byok import ByokCredential
+from gate_llmax.models.byok import ByokCredential, ByokPlan
 
 BYOK_HEADER = "X-Gate-Upstream-Credentials"
+BYOK_PLAN_HEADER = "X-Gate-Byok-Plan"
 
 # The caller's own upstream credential for the send in flight; the httpx request hook turns it into a
 # header. Request-scoped, never on the request body, so it never reaches the gateway's usage log.
@@ -35,3 +36,12 @@ async def inject_byok_header(request: httpx.Request) -> None:
     credential = provider_key_var.get()
     if credential is not None:
         request.headers[BYOK_HEADER] = credential.to_header()
+
+
+def byok_plan_hook(plan: ByokPlan) -> Callable[[httpx.Request], Awaitable[None]]:
+    """A request hook that attaches *plan* as the ``X-Gate-Byok-Plan`` header on every request of a client."""
+
+    async def inject(request: httpx.Request) -> None:
+        request.headers[BYOK_PLAN_HEADER] = plan.to_header()
+
+    return inject

@@ -5,7 +5,7 @@ from importlib.metadata import PackageNotFoundError, version
 from gate_llmax.models.audio import AudioRequest, AudioResponse, TranscriptionSegment
 from gate_llmax.models.audio_gen import AudioGenMode, AudioGenRequest, AudioGenResponse, AudioMode, DialogueTurn
 from gate_llmax.models.audio_isolation import AudioIsolationRequest, AudioIsolationResponse
-from gate_llmax.models.byok import ByokCredential
+from gate_llmax.models.byok import ByokCredential, ByokDialect, ByokPlan
 from gate_llmax.models.config import (
     DeploymentInfo,
     DeploymentStatus,
@@ -105,6 +105,8 @@ __all__ = [
     "BestTarget",
     "BudgetCheck",
     "ByokCredential",
+    "ByokDialect",
+    "ByokPlan",
     "CallControl",
     "DecisionAnswer",
     "DecisionQuestion",
