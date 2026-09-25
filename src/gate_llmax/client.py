@@ -37,6 +37,7 @@ from gate_llmax.models.response import (
     VisionLLMResponse,
 )
 from gate_llmax.models.responses import ResponsesRequest, ResponsesResponse
+from gate_llmax.models.speech_to_speech import SpeechToSpeechRequest, SpeechToSpeechResponse
 from gate_llmax.models.tts import TTSFormat, TTSRequest, TTSResponse
 from gate_llmax.models.usage import (
     ApiKeyName,
@@ -651,6 +652,40 @@ class LLMClient:
             plan=self._default_plan,
         )
         return self._direct_builder(request, "/v1/audio/isolation", "Audio isolation", AudioIsolationResponse)
+
+    def speech_to_speech(
+        self,
+        audio_b64: str,
+        voice: str,
+        *,
+        operation: str,
+        duration_seconds: float = 0.0,
+        remove_background_noise: bool = False,
+        seed: int | None = None,
+        output_format: str = "mp3_44100_128",
+        max_tries: int | None = None,
+        timeout: int | None = None,
+    ) -> DirectRequestBuilder[SpeechToSpeechResponse]:
+        """Fluent builder for the voice changer; ``.call(model)`` sends it.
+
+        ``audio_b64`` is the base64 performance and ``voice`` the target voice id —
+        the delivery is kept, only the timbre changes. ``operation`` tags the usage
+        row; ``duration_seconds`` is used only for usage/billing.
+        """
+        request = SpeechToSpeechRequest(
+            model="",
+            audio=audio_b64,
+            voice=voice,
+            operation=self._resolve_operation(operation),
+            duration_seconds=duration_seconds,
+            remove_background_noise=remove_background_noise,
+            seed=seed,
+            output_format=output_format,
+            max_tries=max_tries,
+            timeout=timeout,
+            plan=self._default_plan,
+        )
+        return self._direct_builder(request, "/v1/audio/speech-to-speech", "Speech to speech", SpeechToSpeechResponse)
 
     def dub(
         self,

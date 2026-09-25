@@ -38,6 +38,7 @@ from gate_llmax.models.response import (
     VisionLLMResponse,
 )
 from gate_llmax.models.responses import ResponsesRequest, ResponsesResponse
+from gate_llmax.models.speech_to_speech import SpeechToSpeechRequest, SpeechToSpeechResponse
 from gate_llmax.models.tts import TTSRequest, TTSResponse
 from gate_llmax.models.video import VideoRequest, VideoResponse, VideoSource
 from gate_llmax.models.vision import VisionLine, VisionOCR, VisionOCRRequest, VisionPoint, VisionWord
@@ -173,6 +174,8 @@ __all__ = [
     "ResolvedDeployment",
     "ResponsesRequest",
     "ResponsesResponse",
+    "SpeechToSpeechRequest",
+    "SpeechToSpeechResponse",
     "StreamChunk",
     "StreamingToolExecutor",
     "TTSRequest",
