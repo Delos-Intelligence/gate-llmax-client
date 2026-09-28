@@ -277,6 +277,14 @@ class LLMClient:
         """Return a shallow copy of the registered client-level usage callbacks (for inspection)."""
         return list(self._usage_callbacks)
 
+    def get_plan(self) -> str | None:
+        """This client's default plan (constructor ``default_plan``); ``None`` when unset."""
+        return self._default_plan
+
+    def get_hosting_providers(self) -> list[str] | None:
+        """This client's default hosting-provider allow-list (constructor ``default_hosting_providers``)."""
+        return list(self._default_hosting_providers) if self._default_hosting_providers is not None else None
+
     def prefix_operation(self, prefix: str) -> Self:
         """Return a view of this client that reports operations as ``"<prefix>/<operation>"``.
 
@@ -302,6 +310,14 @@ class LLMClient:
             return self
         view = self._view()
         view._seed_routing_token = seed_to_token(seed_routing)  # noqa: SLF001
+        return view
+
+    def set_plan(self, plan: str | None, extra_providers: list[str] | None = None) -> Self:
+        """Return a view of this client bound to *plan*, widening routing with *extra_providers* when given (else kept)."""
+        view = self._view()
+        view._default_plan = plan  # noqa: SLF001
+        if extra_providers is not None:
+            view._default_hosting_providers = list(extra_providers)  # noqa: SLF001
         return view
 
     def with_usage_callback(self, *callbacks: UsageCallback) -> Self:
