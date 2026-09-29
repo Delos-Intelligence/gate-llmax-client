@@ -50,6 +50,7 @@ class RawUsage(BaseModel):
     reasoning_tokens: int = 0  # subset of output_tokens spent on the reasoning chain; informational, not billed twice
     input_cost: float = 0.0
     output_cost: float = 0.0
+    cached_input_cost: float = 0.0  # cached-token portion already inside input_cost, priced at the cache rate; a breakdown, not additive
     estimate_gco2: float = 0.0  # modelled gCO2e for the call (tokens x region grid), not measured — set by the gateway
     model: str = ""
     estimated: bool = False
@@ -83,6 +84,7 @@ class RawUsage(BaseModel):
             reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
             input_cost=round(self.input_cost + other.input_cost, ROUND),
             output_cost=round(self.output_cost + other.output_cost, ROUND),
+            cached_input_cost=round(self.cached_input_cost + other.cached_input_cost, ROUND),
             estimate_gco2=round(self.estimate_gco2 + other.estimate_gco2, ROUND),
             model=self.model or other.model,
             estimated=self.estimated or other.estimated,
@@ -136,6 +138,7 @@ class StreamChunk(BaseModel):
     reasoning_tokens: int | None = None
     input_cost: float | None = None
     output_cost: float | None = None
+    cached_input_cost: float | None = None  # cached-token portion of input_cost, on the terminal chunk
     tool_calls_delta: list[JsonDict] | None = None
     api_provider: str | None = None
     hosting_provider: str | None = None

@@ -600,6 +600,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
                         cached_input_tokens=chunk.cached_input_tokens or 0,
                         input_cost=chunk.input_cost or 0.0,
                         output_cost=chunk.output_cost or 0.0,
+                        cached_input_cost=chunk.cached_input_cost or 0.0,
                         model=model,
                         api_provider=chunk.api_provider or "",
                         hosting_provider=chunk.hosting_provider or "",
