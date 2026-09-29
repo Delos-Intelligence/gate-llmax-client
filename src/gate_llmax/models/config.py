@@ -48,6 +48,7 @@ class ModelInfo(BaseModel):
 
     id: str
     name: str
+    pretty_name: str | None = None
     developer_id: str | None = None
     purpose: ModelPurpose = ModelPurpose.CHAT
     capabilities: ModelCapabilities
