@@ -57,6 +57,7 @@ class ModelInfo(BaseModel):
     input_cache_price: float = Field(description="USD per 1M cached input tokens", default=0.0)
     max_output_tokens: int | None = None
     context_window: int | None = None
+    tools_frozen: bool = Field(default=False, description="Declared tool array is fixed; discovered tools are proxied, not appended.")
     max_tries: int = 2
     timeout: int = 120
     extra_attributes: dict[str, Any] = Field(default_factory=dict, description="Arbitrary per-model attributes (e.g. selection weights).")
