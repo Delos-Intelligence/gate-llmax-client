@@ -15,7 +15,7 @@ from typing import Any, Literal, Self, overload
 import httpx
 from pydantic import BaseModel
 
-from gate_llmax.byok import byok_plan_hook, inject_byok_header
+from gate_llmax.byok import byok_plan_hook
 from gate_llmax.models.audio import AudioRequest, AudioResponse
 from gate_llmax.models.audio_gen import AudioGenMode, AudioGenRequest, AudioGenResponse, AudioMode, DialogueTurn
 from gate_llmax.models.audio_isolation import AudioIsolationRequest, AudioIsolationResponse
@@ -204,10 +204,9 @@ class LLMClient:
                 applied to every ``.request(...)`` call; resolves to the plan's hosting providers
                 server-side, and an explicit ``.hosting(...)`` wins. ``None`` = no plan.
             byok_plan: Optional ``ByokPlan`` bound to every request as the ``X-Gate-Byok-Plan``
-                header, so Gate serves the plan's group→model table on the caller's own endpoint
-                and (per its ``cover_missing`` / ``cover_failure`` flags) falls back to managed
-                models. Set once here and call normally; per-call ``.with_provider_key(...)`` still
-                overrides the credential for that call.
+                header, so Gate serves the plan's models and group→model table on the caller's own
+                endpoint and (per its ``cover_missing`` / ``cover_failure`` flags) falls back to
+                managed models. The single BYOK entry point — set it once and call normally.
             seed_routing: Default deterministic-routing seed (e.g. ``(org_id, user_id)``) pinning a
                 principal's calls to one deployment; per-call ``seed_routing=`` overrides it.
             rate_limit: Optional client-side throttle (concurrency / requests-per-min / tokens-per-min)
@@ -241,12 +240,7 @@ class LLMClient:
             base_url=self._base_url,
             headers={"X-Gate-Key": self._api_key},
             timeout=httpx.Timeout(timeout, connect=CONNECT_TIMEOUT, pool=POOL_TIMEOUT),
-            event_hooks={"request": [inject_byok_header]},
         )
-        if httpx_aclient is not None:
-            hooks = httpx_aclient.event_hooks.setdefault("request", [])
-            if inject_byok_header not in hooks:
-                hooks.append(inject_byok_header)
         if byok_plan is not None:
             self._http.event_hooks.setdefault("request", []).append(byok_plan_hook(byok_plan))
         self._stream_timeout = httpx.Timeout(
