@@ -61,6 +61,10 @@ class ModelInfo(BaseModel):
     max_tries: int = 2
     timeout: int = 120
     extra_attributes: dict[str, Any] = Field(default_factory=dict, description="Arbitrary per-model attributes (e.g. selection weights).")
+    translations: dict[str, dict[str, str]] = Field(
+        default_factory=dict,
+        description='Per-locale description overrides, e.g. {"fr": {"description": "…"}}; the name stays pretty_name across locales.',
+    )
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

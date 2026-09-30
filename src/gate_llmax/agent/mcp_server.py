@@ -7,7 +7,8 @@ Two kinds of tools, and the difference matters:
   ``model_in_plan``, ``prefer_list``, ``resolve``, ``heavy_test_cases``, ``verify_probes``,
   ``list_api_keys``, ``usage_errors``, ``usage_error_samples``, ``get_request_payload``,
   ``usage_latency``, ``usage_timeseries``, ``usage_stats``, ``usage_redirects``,
-  ``fallback_health``, ``list_deployments``, ``usage_samples``.
+  ``fallback_health``, ``list_deployments``, ``usage_samples``, ``models_without_locales``,
+  ``set_model_locales``.
 * **Spends real money and quota** — ``heavy_test`` and ``verify_profile``. The first hammers a
   model with the shapes it claims to serve; the second probes whether those claims are right.
   Never reach for either to check the gateway is up or that a model exists — that is what
@@ -54,6 +55,8 @@ except ModuleNotFoundError as exc:  # pragma: no cover - import guard
 mcp = FastMCP("gate-llmax")
 
 _DEV_HINT = "This tool needs a dev API key. Set GATE_API_KEY to a key whose `dev` flag is true."
+
+_LOCALES = ("ar", "de", "en", "es", "fr", "it", "ja", "ko", "pt", "zh")
 
 
 def _config() -> tuple[str, str]:
@@ -328,6 +331,53 @@ async def resolve(model: str, plan: str | None = None) -> dict[str, Any]:
     if not resolved.candidates:
         out["warning"] = "no routable deployment — a call to this model would fail"
     return out
+
+
+@mcp.tool()
+async def models_without_locales() -> dict[str, Any]:
+    """Models missing a localized description in one or more tracked locales, with which ones. Needs a dev key.
+
+    The list of gaps to fill with ``set_model_locales`` — how cosmos gets off hard-coded model copy.
+    """
+    try:
+        async with _client() as client:
+            gaps = await client.models_missing_locales()
+    except LLMError as exc:
+        return {"error": _dev_error(exc)}
+    return {"locales": list(_LOCALES), "count": len(gaps), "models": gaps}
+
+
+@mcp.tool()
+async def set_model_locales(model: str, descriptions: dict[str, str]) -> dict[str, Any]:
+    """Set a model's per-locale descriptions (merged; a blank value drops that locale). Needs a dev key.
+
+    The display name stays the model's pretty name across locales — only the description is localized.
+
+    Args:
+        model: registered name, alias, or a few words of one.
+        descriptions: locale code -> description, e.g. {"fr": "…", "de": "…"}. Locales: ar de en es fr it ja ko pt zh.
+    """
+    unknown = sorted(set(descriptions) - set(_LOCALES))
+    if unknown:
+        return {"error": f"Unknown locale(s): {', '.join(unknown)}. Valid: {' '.join(_LOCALES)}"}
+    try:
+        async with _client() as client:
+            catalogue = await client.list_models()
+            found = lookup.pick(model, [m.name for m in catalogue])
+            if found.name is None and found.ambiguous:
+                return {"query": model, "ambiguous": found.candidates, "hint": "several models match — name one"}
+            if found.name is None:
+                return {"query": model, "found": False, "closest": found.candidates}
+            info = next((m for m in catalogue if m.name == found.name), None)
+            if info is None:
+                return {"query": model, "found": False}
+            updated = await client.set_model_locales(info.id, dict(descriptions))
+    except LLMError as exc:
+        return {"error": _dev_error(exc)}
+    raw = updated.get("translations")
+    translations = raw if isinstance(raw, dict) else {}
+    filled = [loc for loc in _LOCALES if isinstance(e := translations.get(loc), dict) and str(e.get("description") or "").strip()]
+    return {"model": info.name, "filled": filled, "missing": [loc for loc in _LOCALES if loc not in filled]}
 
 
 @mcp.tool()

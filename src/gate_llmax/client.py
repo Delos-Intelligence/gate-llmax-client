@@ -1013,6 +1013,18 @@ class LLMClient:
         _raise_for_status(response)
         return [ModelInfo.model_validate(item) for item in response.json()]
 
+    async def models_missing_locales(self) -> list[JsonDict]:
+        """GET /v1/model-locales/missing — models lacking a description in one or more tracked locales. Needs a dev key."""
+        response = await self._http.get("/v1/model-locales/missing")
+        _raise_for_status(response)
+        return response.json()
+
+    async def set_model_locales(self, model_id: str, descriptions: dict[str, str | None]) -> JsonDict:
+        """PUT /v1/model-locales/{model_id} — merge per-locale descriptions into a model's translations. Needs a dev key."""
+        response = await self._http.put(f"/v1/model-locales/{model_id}", json={"descriptions": descriptions})
+        _raise_for_status(response)
+        return response.json()
+
     async def list_extra_attributes(self) -> list[ExtraAttributeName]:
         """GET /v1/extra-attributes — the registered extra-attribute names."""
         response = await self._http.get("/v1/extra-attributes")
