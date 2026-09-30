@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from gate_llmax.models.audio_gen import AudioGenRequest
 from gate_llmax.models.images import ImageData, ImageRequest, ImageResponse
-from gate_llmax.models.messages import Message, TextMessage
+from gate_llmax.models.messages import ImageMessage, Message, TextMessage
 from gate_llmax.models.request import (
     BestTarget,
     FallbackTarget,
@@ -71,12 +71,14 @@ class ToolProgress(BaseModel):
 class ToolResult(BaseModel):
     """Terminal item from a streaming tool: the result fed back to the model.
 
-    ``output`` becomes the tool message content. ``redo`` controls whether the model is
-    re-invoked after the tools run — ``False`` ends the loop (e.g. the tool already
-    produced the final answer and there is nothing left for the model to do).
+    ``output`` becomes the tool message content, ``images`` ride along in the same message
+    for the model to see. ``redo`` controls whether the model is re-invoked after the tools
+    run — ``False`` ends the loop (e.g. the tool already produced the final answer and there
+    is nothing left for the model to do).
     """
 
     output: str | None = None
+    images: list[ImageMessage] = Field(default_factory=list)
     redo: bool = True
 
 
@@ -1108,7 +1110,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
                 elif isinstance(item, ToolProgress):
                     yield StreamChunk(text=item.content)
                 else:
-                    messages.append(Message.tool(tc.id, item.output or "", name=tc.function.name))
+                    messages.append(Message.tool(tc.id, item.output or "", name=tc.function.name, images=item.images))
                     answered.add(tc.id)
                     if not item.redo:
                         retrigger = False

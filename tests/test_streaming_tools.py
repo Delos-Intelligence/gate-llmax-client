@@ -11,6 +11,7 @@ from typing import Any
 
 import gate_llmax.client as client_mod
 from gate_llmax import LLMClient, ToolProgress, ToolResult, ToolStreamItem
+from gate_llmax.models.messages import ImageMessage, TextMessage
 from gate_llmax.models.response import StreamChunk
 from gate_llmax.types import JsonDict
 
@@ -67,3 +68,32 @@ def test_redo_false_ends_the_loop(monkeypatch: Any) -> None:
         [{"type": "function", "function": {"name": "search"}}], stream_executor=executor
     )
     assert asyncio.run(_collect(builder)) == "thinking... [done] "
+
+
+def test_images_reach_the_model_inside_the_tool_message(monkeypatch: Any) -> None:
+    """A result's images go into the same tool message as its text, for the next model turn to see."""
+    sent: list[Any] = []
+    scripted = _scripted_stream()
+
+    async def _stream(self: LLMClient, request: Any, *, priority: int = 0) -> AsyncIterator[StreamChunk]:
+        sent.append([message.model_copy(deep=True) for message in request.messages])
+        async for chunk in scripted(self, request, priority=priority):
+            yield chunk
+
+    monkeypatch.setattr(client_mod.LLMClient, "_stream", _stream)
+
+    async def executor(tool_id: str, name: str, args: dict) -> AsyncIterator[ToolStreamItem]:  # noqa: ARG001
+        yield ToolResult(output="[image returned]", images=[ImageMessage(b64="iVBORw0KGgo=", media_type="image/png")])
+
+    client = LLMClient(api_key="k", base_url="http://x")
+    builder = client.request(prompt="hi", operation="test_streaming_tools").with_tools(
+        [{"type": "function", "function": {"name": "search"}}], stream_executor=executor
+    )
+    asyncio.run(_collect(builder))
+
+    tool_message = sent[1][-1]
+    assert tool_message.tool_call_id == "call_1"
+    assert tool_message.content == [
+        TextMessage(text="[image returned]"),
+        ImageMessage(b64="iVBORw0KGgo=", media_type="image/png"),
+    ]

@@ -92,9 +92,16 @@ class Message(BaseModel):
         return cls(role=MessageRole.ASSISTANT, content=blocks, tool_calls=tool_calls)
 
     @classmethod
-    def tool(cls, tool_call_id: str, content: str, name: str | None = None) -> Message:
-        """Create a tool-result message answering a prior tool call."""
-        return cls(role=MessageRole.TOOL, content=[TextMessage(text=content)], tool_call_id=tool_call_id, name=name)
+    def tool(
+        cls,
+        tool_call_id: str,
+        content: str,
+        name: str | None = None,
+        images: list[ImageMessage] | None = None,
+    ) -> Message:
+        """Create a tool-result message answering a prior tool call, with the images the tool returned."""
+        blocks: list[TextMessage | ImageMessage] = [TextMessage(text=content), *(images or [])]
+        return cls(role=MessageRole.TOOL, content=blocks, tool_call_id=tool_call_id, name=name)
 
     @classmethod
     def from_openai(cls, message: Any) -> Message:
