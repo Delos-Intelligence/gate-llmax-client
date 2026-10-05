@@ -70,3 +70,13 @@ def test_chains_with_call_prefer_and_fluent(monkeypatch: Any) -> None:
     assert req.target.model == "a"
     assert req.zone_selection is not None
     assert req.zone_selection.regions == ["EU"]
+
+
+def test_images_alternative_reaches_the_request(monkeypatch: Any) -> None:
+    """A blind model gets this text in place of the messages' images rather than a 422."""
+    send, captured = _send_returning("hello")
+    monkeypatch.setattr(client_mod.LLMClient, "_send", send)
+    client = LLMClient(api_key="k", base_url="http://x")
+
+    asyncio.run(client.simple_request("hi", operation="test_simple_request", images_alternative="(no image)").call("m"))
+    assert captured["req"].images_alternative == "(no image)"

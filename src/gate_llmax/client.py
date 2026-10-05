@@ -466,13 +466,15 @@ class LLMClient:
         timeout: int | None = None,
         seed_routing: object | None = None,
         specifics: RequestSpecifics | None = None,
+        images_alternative: str | None = None,
     ) -> RequestBuilder[LLMResponse]:
         """Terse ``.request(...)`` for the common case: flat tuning kwargs instead of a ``RequestSpecifics``.
 
         Returns a normal ``RequestBuilder`` — the model goes on the shared terminal (``.call`` /
         ``.call_prefer`` / ``.call_best``) and every fluent method still chains. ``prompt`` is a string
         (one user turn) or a ``Message`` list; pass ``specifics`` for non-tuning fields. For JSON, chain
-        ``.cast_json()`` / ``.cast(T)``.
+        ``.cast_json()`` / ``.cast(T)``. ``images_alternative`` is what the gateway puts in place of the
+        messages' images for a model that cannot see them, instead of refusing the request.
         """
         overrides = {
             k: v
@@ -488,6 +490,7 @@ class LLMClient:
             max_tries=max_tries,
             timeout=timeout,
             seed_routing=seed_routing,
+            images_alternative=images_alternative,
         )
 
     def _direct_builder[T: LLMCallRecord](
