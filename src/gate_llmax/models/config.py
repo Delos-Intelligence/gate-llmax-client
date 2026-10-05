@@ -33,6 +33,9 @@ class ModelPurpose(StrEnum):
     VIDEO = "video"
     DECISION = "decision"
     OCR = "ocr"
+    REALTIME_STT = "realtime_stt"
+    REALTIME_STS = "realtime_sts"
+    REALTIME_TTS = "realtime_tts"
 
 
 class ModelCapabilities(BaseModel):
