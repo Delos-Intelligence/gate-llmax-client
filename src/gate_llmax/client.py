@@ -10,7 +10,8 @@ import json
 import logging
 import warnings
 from collections.abc import AsyncIterator
-from typing import Any, Literal, Self, overload
+from typing import TYPE_CHECKING, Any, Literal, Self, overload
+from urllib.parse import urlencode
 
 import httpx
 from pydantic import BaseModel
@@ -27,6 +28,7 @@ from gate_llmax.models.embed import EmbedRequest, EmbedResponse
 from gate_llmax.models.images import AspectRatio, ImageData, ImageQuality, ImageRequest, ImageResponse, ImageSize
 from gate_llmax.models.messages import Message, MessageRole, TextMessage
 from gate_llmax.models.ocr import OCRDocument, OCRRequest, OCRResponse
+from gate_llmax.models.realtime import RealtimeSessionConfig
 from gate_llmax.models.request import LLMRequest, RequestSpecifics, ResolveRequest, ZoneSelection
 from gate_llmax.models.response import (
     LLMCallRecord,
@@ -79,6 +81,9 @@ from .request import (
     VideoRequestBuilder,
 )
 from .streaming import StreamResponse
+
+if TYPE_CHECKING:
+    from .realtime_client import RealtimeConnection
 
 # Outermost rung of the timeout ladder: strictly above Gate's own ceiling, so the gateway fires first.
 GATE_MODEL_BUDGET = 600.0  # models.timeout — what Gate hands ONE upstream attempt
@@ -593,6 +598,30 @@ class LLMClient:
             plan=self._default_plan,
         )
         return self._direct_builder(request, "/v1/ocr", "OCR", OCRResponse)
+
+    def realtime(
+        self,
+        model: str,
+        *,
+        purpose: str = "converse",
+        session_id: str | None = None,
+        **config: Any,
+    ) -> RealtimeConnection:
+        """Open a live-voice session: ``async with client.realtime(model) as rt: ... async for ev in rt``.
+
+        ``purpose`` is ``converse`` (speech-to-speech), ``transcribe`` (STT) or ``speak`` (TTS). ``config``
+        takes any ``RealtimeSessionConfig`` field (voice, language, system_instruction, tools, output_sample_rate,
+        reasoning_effort, temperature, video_fps, …). Returns an async context manager, not awaitable on its own.
+        """
+        from .realtime_client import PURPOSE_ENDPOINT, RealtimeConnection
+
+        endpoint = PURPOSE_ENDPOINT.get(purpose, purpose)
+        session_config = RealtimeSessionConfig(model=model, **config)
+        scheme = "wss" if self._base_url.startswith("https") else "ws"
+        host = self._base_url.split("://", 1)[-1]
+        query = urlencode({k: v for k, v in {"model": model, "session_id": session_id}.items() if v})
+        ws_url = f"{scheme}://{host}/v1/realtime/{endpoint}?{query}"
+        return RealtimeConnection(ws_url, self._api_key, session_config, output_sample_rate=session_config.output_sample_rate)
 
     def transcribe(
         self,

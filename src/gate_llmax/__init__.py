@@ -27,6 +27,7 @@ from gate_llmax.models.messages import ImageMessage, Message, MessageRole, TextM
 from gate_llmax.models.ocr import OCRDocument, OCRPage, OCRRequest, OCRResponse
 from gate_llmax.models.realtime import (
     RealtimeAudioData,
+    RealtimeCapabilities,
     RealtimeEvent,
     RealtimeEventType,
     RealtimeInputTranscriptData,
@@ -54,6 +55,7 @@ from gate_llmax.models.speech_to_speech import SpeechToSpeechRequest, SpeechToSp
 from gate_llmax.models.tts import TTSRequest, TTSResponse
 from gate_llmax.models.video import VideoRequest, VideoResponse, VideoSource
 from gate_llmax.models.vision import VisionLine, VisionOCR, VisionOCRRequest, VisionPoint, VisionWord
+from gate_llmax.realtime_client import RealtimeConnection
 from gate_llmax.types import JsonDict, JsonValue, OutputStatus, ReasoningEffort
 
 from .client import LLMClient
@@ -180,6 +182,8 @@ __all__ = [
     "RateLimit",
     "RawUsage",
     "RealtimeAudioData",
+    "RealtimeCapabilities",
+    "RealtimeConnection",
     "RealtimeEvent",
     "RealtimeEventType",
     "RealtimeInputTranscriptData",

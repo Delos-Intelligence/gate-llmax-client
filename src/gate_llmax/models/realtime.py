@@ -12,7 +12,7 @@ from .response import LLMCallRecord
 
 
 class RealtimeSessionConfig(CallControl):
-    """The provider-agnostic slice of a realtime session's open parameters; vendor knobs live on the deployment."""
+    """A realtime session's open parameters: the shared slice plus optional per-session vendor knobs."""
 
     model: str
     system_instruction: str | None = None
@@ -24,6 +24,24 @@ class RealtimeSessionConfig(CallControl):
     enable_output_audio_transcription: bool = True
     silence_duration_ms: int | None = None
     initial_message: str | None = None
+    video_fps: float | None = None
+    reasoning_effort: str | None = None
+    temperature: float | None = None
+    proactive_audio: bool = False
+    enable_affective_dialog: bool = False
+    end_of_speech_sensitivity: str | None = None
+    context_window_compression_tokens: int | None = None
+
+
+class RealtimeCapabilities(BaseModel):
+    """What a realtime session can do, sent to the client right after connect (gates video, tool and context ops)."""
+
+    provider: str = ""
+    purpose: str = ""
+    video_input: bool = False
+    tool_update: bool = False
+    system_message: bool = False
+    async_tools: bool = False
 
 
 @unique
