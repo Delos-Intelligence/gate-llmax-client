@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from gate_llmax.models.audio_gen import AudioGenRequest
 from gate_llmax.models.images import ImageData, ImageRequest, ImageResponse
-from gate_llmax.models.messages import ImageMessage, Message, TextMessage
+from gate_llmax.models.messages import ImageMessage, Message, MessageRole, TextMessage
 from gate_llmax.models.request import (
     BestTarget,
     FallbackTarget,
@@ -326,6 +326,37 @@ class MediaBuilder[ResponseT: LLMCallRecord](BaseModel):
             raise last_error
         msg = "call_prefer requires at least one model."
         raise ValueError(msg)
+
+
+# OpenAI json_object mode 400s unless the word "json" is in the input; the Responses API scans
+# only the user turns, not the system prompt it maps to `instructions`, so the nudge goes there.
+_JSON_NUDGE = "Respond with a JSON object."
+
+
+def _wants_json_object(response_format: JsonDict | None) -> bool:
+    return isinstance(response_format, dict) and response_format.get("type") == "json_object"
+
+
+def _user_turn_mentions_json(messages: list[Message]) -> bool:
+    return any(
+        isinstance(block, TextMessage) and "json" in block.text.lower()
+        for msg in messages
+        if msg.role is MessageRole.USER
+        for block in msg.content
+    )
+
+
+def ensure_json_word_in_user_turn(messages: list[Message], response_format: JsonDict | None) -> list[Message]:
+    """Guarantee the word "json" rides in a user turn when json_object is forced, so OpenAI does not 400."""
+    if not _wants_json_object(response_format) or _user_turn_mentions_json(messages):
+        return messages
+    out = list(messages)
+    for i in range(len(out) - 1, -1, -1):
+        if out[i].role is MessageRole.USER:
+            out[i] = out[i].model_copy(update={"content": [*out[i].content, TextMessage(text=_JSON_NUDGE)]})
+            return out
+    out.append(Message.user(_JSON_NUDGE))
+    return out
 
 
 class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
@@ -718,7 +749,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         request = LLMRequest(
             target=ParallelTarget(models=models, specifics_by_model=specifics_by_model),
             system_prompt=self.system_prompt,
-            messages=self.messages,
+            messages=self._json_safe_messages(),
             images=self.images,
             images_alternative=self.images_alternative,
             tools=self.tools,
@@ -773,7 +804,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         batch = LLMRequest(
             target=ParallelTarget(models=models, specifics_by_model=specifics_by_model),
             system_prompt=self.system_prompt,
-            messages=self.messages,
+            messages=self._json_safe_messages(),
             images=self.images,
             images_alternative=self.images_alternative,
             tools=self.tools,
@@ -872,7 +903,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         request = LLMRequest(
             target=BestTarget(models=models, attribute=attribute, direction=direction),
             system_prompt=self.system_prompt,
-            messages=self.messages,
+            messages=self._json_safe_messages(),
             images=self.images,
             images_alternative=self.images_alternative,
             tools=self.tools,
@@ -1120,12 +1151,16 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             if not retrigger:
                 return
 
+    def _json_safe_messages(self) -> list[Message]:
+        """``self.messages``, with a json nudge added when json_object mode would otherwise 400."""
+        return ensure_json_word_in_user_turn(self.messages, self.response_format)
+
     def _build_request(self, model: str, stream: bool, *, smooth_server_side: bool = False, smooth_duration_ms: int = 0) -> LLMRequest:
         target = FallbackTarget(models=self.prefer_models) if self.prefer_models else SingleTarget(model=model)
         return LLMRequest(
             target=target,
             system_prompt=self.system_prompt,
-            messages=self.messages,
+            messages=self._json_safe_messages(),
             tools=self.tools,
             tool_choice=self.tool_choice,
             parallel_tool_calls=self.parallel_tool_calls,
