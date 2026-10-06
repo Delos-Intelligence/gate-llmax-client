@@ -1036,9 +1036,9 @@ class LLMClient:
         )
         return ImageRequestBuilder(client=self, request=request, usage_callbacks=list(self._usage_callbacks), budget_check=self._budget)
 
-    async def list_models(self) -> list[ModelInfo]:
-        """GET /v1/models — registered models (capabilities, pricing, extra_attributes)."""
-        response = await self._http.get("/v1/models")
+    async def list_models(self, locale: str | None = None) -> list[ModelInfo]:
+        """GET /v1/models — registered models; ``locale`` ("all" or a code) keeps translations, omitted drops them."""
+        response = await self._http.get("/v1/models", params={"locale": locale} if locale else None)
         _raise_for_status(response)
         return [ModelInfo.model_validate(item) for item in response.json()]
 
