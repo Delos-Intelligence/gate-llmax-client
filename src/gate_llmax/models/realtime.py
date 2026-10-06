@@ -31,6 +31,9 @@ class RealtimeSessionConfig(CallControl):
     enable_affective_dialog: bool = False
     end_of_speech_sensitivity: str | None = None
     context_window_compression_tokens: int | None = None
+    speed: float | None = None
+    volume: float | None = None
+    emotion: str | None = None
 
 
 class RealtimeCapabilities(BaseModel):
