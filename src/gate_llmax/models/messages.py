@@ -69,6 +69,8 @@ class Message(BaseModel):
         default=None,
         description="OpenAI-shaped tool calls on an assistant turn.",
     )
+    reasoning: str | None = Field(default=None, description="Assistant thinking text, replayed to the model on the next turn.")
+    reasoning_signature: str | None = Field(default=None, description="Opaque signature validating a replayed Anthropic thinking block.")
 
     @classmethod
     def user(cls, content: str) -> Message:
@@ -114,10 +116,12 @@ class Message(BaseModel):
         if isinstance(message, dict):
             role, content = message.get("role"), message.get("content")
             tool_calls, tool_call_id, name = message.get("tool_calls"), message.get("tool_call_id"), message.get("name")
+            reasoning, reasoning_signature = message.get("reasoning"), message.get("reasoning_signature")
         else:
             role, content = getattr(message, "role", None), getattr(message, "content", None)
             tool_calls = getattr(message, "tool_calls", None)
             tool_call_id, name = getattr(message, "tool_call_id", None), getattr(message, "name", None)
+            reasoning, reasoning_signature = getattr(message, "reasoning", None), getattr(message, "reasoning_signature", None)
 
         blocks = _content_blocks(content)
         text = "\n".join(b.text for b in blocks if isinstance(b, TextMessage))
@@ -126,8 +130,11 @@ class Message(BaseModel):
             return cls.system(text)
         if role == "assistant":
             if tool_calls:
-                return cls.assistant_tool_calls([ToolCall.from_openai(tc) for tc in tool_calls], text)
-            return cls(role=MessageRole.ASSISTANT, content=blocks or [TextMessage(text=text)])
+                msg = cls.assistant_tool_calls([ToolCall.from_openai(tc) for tc in tool_calls], text)
+            else:
+                msg = cls(role=MessageRole.ASSISTANT, content=blocks or [TextMessage(text=text)])
+            msg.reasoning, msg.reasoning_signature = reasoning, reasoning_signature
+            return msg
         if role == "tool":
             # Tool results may carry images (e.g. a screenshot/read_image tool) — keep blocks.
             return cls(role=MessageRole.TOOL, content=blocks or [TextMessage(text="")], tool_call_id=tool_call_id or "", name=name)
@@ -208,6 +215,10 @@ def message_to_openai_dict(msg: Message) -> JsonDict:
         payload["content"] = []
     if msg.tool_calls is not None:
         payload["tool_calls"] = [tc.model_dump() for tc in msg.tool_calls]
+    if msg.reasoning is not None:
+        payload["reasoning"] = msg.reasoning
+    if msg.reasoning_signature is not None:
+        payload["reasoning_signature"] = msg.reasoning_signature
     if msg.tool_call_id is not None:
         payload["tool_call_id"] = msg.tool_call_id
     if msg.name is not None:

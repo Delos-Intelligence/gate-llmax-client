@@ -106,6 +106,7 @@ class StreamChunkDelta(BaseModel):
     # Upstreams spell the chain `reasoning` (OpenRouter) or `reasoning_content` (DeepSeek/GLM);
     # both are read on the way in, and `reasoning` is the one spelling written on the way out.
     reasoning: str | None = None
+    reasoning_signature: str | None = None
     tool_calls: list[JsonDict] | None = None
 
 
@@ -129,6 +130,7 @@ class StreamChunk(BaseModel):
 
     text: str = ""
     reasoning: str = ""
+    reasoning_signature: str = ""  # opaque signature for the thinking block just streamed; replayed to validate it next turn
     is_done: bool = False
     finish_reason: str | None = None
     native_finish_reason: str | None = None  # the provider's own reason before OpenAI-vocab flattening; None until a terminal chunk
@@ -161,6 +163,7 @@ class StreamChunk(BaseModel):
                 delta=StreamChunkDelta(
                     content=self.text or None,
                     reasoning=self.reasoning or None,
+                    reasoning_signature=self.reasoning_signature or None,
                     tool_calls=self.tool_calls_delta,
                 ),
                 finish_reason=self.finish_reason,
@@ -207,6 +210,7 @@ class StreamChunk(BaseModel):
         """Build from an OpenAI ChatCompletionChunk."""
         text = ""
         reasoning = ""
+        reasoning_signature = ""
         is_done = False
         finish_reason = None
         native_finish_reason = None
@@ -221,6 +225,7 @@ class StreamChunk(BaseModel):
                     text = choice.delta.content
                 # Reasoning streamed in a separate field (DeepSeek/GLM via OpenRouter).
                 reasoning = getattr(choice.delta, "reasoning", None) or getattr(choice.delta, "reasoning_content", None) or ""
+                reasoning_signature = getattr(choice.delta, "reasoning_signature", None) or ""
                 if choice.delta.tool_calls:
                     # Plain dicts so StreamChunk stays JSON-serializable over SSE.
                     tool_calls_delta = [tc.model_dump() for tc in choice.delta.tool_calls]
@@ -245,6 +250,7 @@ class StreamChunk(BaseModel):
         return cls(
             text=text,
             reasoning=reasoning,
+            reasoning_signature=reasoning_signature,
             is_done=is_done,
             finish_reason=finish_reason,
             native_finish_reason=native_finish_reason,
@@ -261,6 +267,7 @@ class StreamChunk(BaseModel):
         event_type = event.get("type", "")
         text = ""
         reasoning = ""
+        reasoning_signature = ""
         is_done = False
         finish_reason = None
         input_tokens = None
@@ -295,9 +302,11 @@ class StreamChunk(BaseModel):
                     }
                 ]
             elif delta_type == "thinking_delta":
-                # Extended thinking streams its chain here. signature_delta — and whole
-                # redacted_thinking blocks — carry opaque ciphertext, so they are dropped.
+                # Extended thinking streams its chain here; the closing signature_delta is captured below.
                 reasoning = delta.get("thinking", "")
+            elif delta_type == "signature_delta":
+                # Closes a thinking block; replayed next turn so Anthropic accepts the block it signed. Redacted blocks stay dropped.
+                reasoning_signature = delta.get("signature", "")
             else:
                 text = delta.get("text", "")
         elif event_type == "message_start":
@@ -320,6 +329,7 @@ class StreamChunk(BaseModel):
         return cls(
             text=text,
             reasoning=reasoning,
+            reasoning_signature=reasoning_signature,
             is_done=is_done,
             finish_reason=finish_reason,
             input_tokens=input_tokens,
@@ -378,6 +388,7 @@ class LLMResponse(LLMCallRecord):
 
     raw_text: str = ""
     reasoning: str = Field(default="", description="Assistant reasoning/thinking text (empty string when none).")
+    reasoning_signature: str = Field(default="", description="Opaque signature for the thinking block, replayed to validate it next turn.")
     tool_calls: list[ToolCall] | None = None
     json_object: JsonDict | None = None
     choices: list[str] | None = Field(
@@ -400,6 +411,8 @@ class LLMResponse(LLMCallRecord):
         message: dict[str, Any] = {"role": "assistant", "content": self.raw_text or None}
         if self.reasoning:
             message["reasoning"] = self.reasoning
+        if self.reasoning_signature:
+            message["reasoning_signature"] = self.reasoning_signature
         if self.tool_calls:
             message["tool_calls"] = [tc.model_dump() for tc in self.tool_calls]
         return {
