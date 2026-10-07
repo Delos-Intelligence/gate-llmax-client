@@ -8,8 +8,9 @@ import copy
 import hashlib
 import json
 import logging
+import time
 import warnings
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import TYPE_CHECKING, Any, Literal, Self, overload
 from urllib.parse import urlencode
 
@@ -116,6 +117,7 @@ STREAM_READ_TIMEOUT = DEFAULT_TIMEOUT
 STREAM_FRAME_GAP = GATEWAY_MAX_BUDGET + CLIENT_MARGIN  # once frames flow, above Gate's own per-chunk watchdog
 STREAM_MAX_RETRIES = 2  # resume attempts after a severed connection
 STREAM_RETRY_BACKOFF = 0.5
+CATALOG_CACHE_TTL = 300.0  # how long model_attributes() reuses a /v1/models snapshot before re-fetching
 # finish_reason when a drop could not be resumed: the answer above it is partial.
 STREAM_INTERRUPTED = "interrupted"
 
@@ -123,6 +125,15 @@ STREAM_INTERRUPTED = "interrupted"
 TRANSIENT_STREAM_ERRORS = (httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError)
 
 logger = logging.getLogger(__name__)
+
+
+def _model_attribute(info: ModelInfo | None, name: str) -> Any:
+    """One attribute off a ``ModelInfo`` — a declared field first, else ``extra_attributes``; ``None`` if absent."""
+    if info is None:
+        return None
+    if name in type(info).model_fields:
+        return getattr(info, name)
+    return info.extra_attributes.get(name)
 
 
 class LLMClient:
@@ -148,6 +159,7 @@ class LLMClient:
     _stream_frame_gap: float
     _stream_first_frame: float
     _owns_http: bool
+    _catalog_box: dict[str, Any]
 
     def __init__(
         self,
@@ -256,6 +268,8 @@ class LLMClient:
         )
         self._stream_frame_gap = stream_frame_gap
         self._stream_first_frame = stream_read_timeout
+        # Shared so copy.copy views reuse one cached catalog snapshot.
+        self._catalog_box = {"by_name": None, "at": 0.0}
 
     def clear_usage_callbacks(self) -> None:
         """Drop all usage callbacks so subsequent calls on this client are unbilled / untracked.
@@ -1041,6 +1055,44 @@ class LLMClient:
         response = await self._http.get("/v1/models", params={"locale": locale} if locale else None)
         _raise_for_status(response)
         return [ModelInfo.model_validate(item) for item in response.json()]
+
+    async def _catalog_by_name(self, *, refresh: bool = False) -> dict[str, ModelInfo]:
+        """The ``/v1/models`` snapshot keyed by name, cached for ``CATALOG_CACHE_TTL`` and shared across views."""
+        box = self._catalog_box
+        fresh = box["by_name"] is not None and (time.monotonic() - box["at"]) < CATALOG_CACHE_TTL
+        if refresh or not fresh:
+            box["by_name"] = {m.name: m for m in await self.list_models()}
+            box["at"] = time.monotonic()
+        return box["by_name"]
+
+    async def preload_catalog(self) -> None:
+        """Warm the cached ``/v1/models`` snapshot that ``model_attributes()`` reads, so later lookups do no I/O."""
+        await self._catalog_by_name(refresh=True)
+
+    async def model_attributes(
+        self,
+        attributes: Sequence[str],
+        models: Sequence[str] | None = None,
+        *,
+        refresh: bool = False,
+    ) -> dict[str, dict[str, Any]]:
+        """Read named attributes for the given models from a cached ``/v1/models`` snapshot.
+
+        Each name resolves as a ``ModelInfo`` field first (e.g. ``context_window``, ``input_token_price``),
+        else from ``extra_attributes`` (e.g. ``model_intelligence_level``); an unknown model or attribute
+        yields ``None``. The catalog is fetched once and reused (``refresh=True`` re-fetches,
+        ``preload_catalog()`` warms it), so repeated lookups do no network I/O.
+
+        Args:
+            attributes: attribute names to read.
+            models: model names, aliases or groups; ``None`` reads every known model.
+            refresh: re-fetch the catalog before reading.
+
+        Returns: ``{model_name: {attribute: value}}``.
+        """
+        catalog = await self._catalog_by_name(refresh=refresh)
+        names = list(models) if models is not None else list(catalog)
+        return {name: {attr: _model_attribute(catalog.get(name), attr) for attr in attributes} for name in names}
 
     async def models_missing_locales(self) -> list[JsonDict]:
         """GET /v1/model-locales/missing — models lacking a description in one or more tracked locales. Needs a dev key."""
