@@ -1048,9 +1048,51 @@ class LLMClient:
         _raise_for_status(response)
         return response.json()
 
-    async def set_model_locales(self, model_id: str, descriptions: dict[str, str | None]) -> JsonDict:
-        """PUT /v1/model-locales/{model_id} — merge per-locale descriptions into a model's translations. Needs a dev key."""
-        response = await self._http.put(f"/v1/model-locales/{model_id}", json={"descriptions": descriptions})
+    async def set_model_locales(self, model_id: str, descriptions: dict[str, str | None], *, replace: bool = False) -> JsonDict:
+        """PUT /v1/model-locales/{model_id} — merge (or ``replace``) a model's per-locale descriptions. Needs a dev key."""
+        response = await self._http.put(f"/v1/model-locales/{model_id}", json={"descriptions": descriptions, "replace": replace})
+        _raise_for_status(response)
+        return response.json()
+
+    async def create_model(self, model: JsonDict) -> JsonDict:
+        """POST /admin/models — create a complete model; the server rejects incomplete ones. Needs the admin secret or an admin key."""
+        response = await self._http.post("/admin/models", json=model)
+        _raise_for_status(response)
+        return response.json()
+
+    async def update_model(self, model_id: str, changes: JsonDict) -> JsonDict:
+        """PATCH /admin/models/{id} — adjust token prices or cost tier. Needs admin."""
+        response = await self._http.patch(f"/admin/models/{model_id}", json=changes)
+        _raise_for_status(response)
+        return response.json()
+
+    async def create_deployment(self, deployment: JsonDict) -> JsonDict:
+        """POST /admin/deployments — add one route to a model; returns the row plus verify/heavy-test next steps. Needs admin."""
+        response = await self._http.post("/admin/deployments", json=deployment)
+        _raise_for_status(response)
+        return response.json()
+
+    async def update_deployment(self, deployment_id: str, changes: JsonDict) -> JsonDict:
+        """PATCH /admin/deployments/{id} — change priority, ktpm, max_output_tokens, prices or status. Needs admin."""
+        response = await self._http.patch(f"/admin/deployments/{deployment_id}", json=changes)
+        _raise_for_status(response)
+        return response.json()
+
+    async def admin_credentials(self) -> list[JsonDict]:
+        """GET /admin/credentials — credential accounts with deployment counts; no secrets or endpoints. Needs admin."""
+        response = await self._http.get("/admin/credentials")
+        _raise_for_status(response)
+        return response.json()
+
+    async def admin_api_providers(self) -> list[JsonDict]:
+        """GET /admin/api-providers — the API dialects a deployment can speak. Needs admin."""
+        response = await self._http.get("/admin/api-providers")
+        _raise_for_status(response)
+        return response.json()
+
+    async def admin_hosting_providers(self) -> list[JsonDict]:
+        """GET /admin/hosting-providers — the infra providers a deployment can run on. Needs admin."""
+        response = await self._http.get("/admin/hosting-providers")
         _raise_for_status(response)
         return response.json()
 

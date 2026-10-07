@@ -8,11 +8,16 @@ Two kinds of tools, and the difference matters:
   ``list_api_keys``, ``usage_errors``, ``usage_error_samples``, ``get_request_payload``,
   ``usage_latency``, ``usage_timeseries``, ``usage_stats``, ``usage_redirects``,
   ``fallback_health``, ``list_deployments``, ``usage_samples``, ``models_without_locales``,
-  ``set_model_locales``.
+  ``set_model_locales``, ``list_credentials``, ``list_providers``.
 * **Spends real money and quota** — ``heavy_test`` and ``verify_profile``. The first hammers a
   model with the shapes it claims to serve; the second probes whether those claims are right.
   Never reach for either to check the gateway is up or that a model exists — that is what
   ``ping`` and ``resolve`` are for.
+* **Mutates the catalog** (needs an admin key) — ``create_model``, ``update_model``,
+  ``create_deployment``, ``update_deployment``, and ``set_model_locales``. ``create_model`` rejects
+  anything half-built; after ``create_deployment`` qualify the endpoint with ``verify_profile`` +
+  ``heavy_test`` before it carries real traffic. ``list_credentials`` / ``list_providers`` find the
+  ids a deployment needs.
 
 Config comes from the environment, falling back to the file ``gate-llmax agent install`` writes:
     GATE_BASE_URL   base URL of the Gate gateway (e.g. https://gate.example.com)
@@ -348,14 +353,15 @@ async def models_without_locales() -> dict[str, Any]:
 
 
 @mcp.tool()
-async def set_model_locales(model: str, descriptions: dict[str, str]) -> dict[str, Any]:
-    """Set a model's per-locale descriptions (merged; a blank value drops that locale). Needs a dev key.
+async def set_model_locales(model: str, descriptions: dict[str, str], *, replace: bool = False) -> dict[str, Any]:
+    """Edit a model's per-locale descriptions (merged; a blank value drops a locale). Needs a dev key.
 
     The display name stays the model's pretty name across locales — only the description is localized.
 
     Args:
         model: registered name, alias, or a few words of one.
         descriptions: locale code -> description, e.g. {"fr": "…", "de": "…"}. Locales: ar de en es fr it ja ko pt zh.
+        replace: replace the whole translations map with these locales instead of merging into what is there.
     """
     unknown = sorted(set(descriptions) - set(_LOCALES))
     if unknown:
@@ -371,13 +377,296 @@ async def set_model_locales(model: str, descriptions: dict[str, str]) -> dict[st
             info = next((m for m in catalogue if m.name == found.name), None)
             if info is None:
                 return {"query": model, "found": False}
-            updated = await client.set_model_locales(info.id, dict(descriptions))
+            updated = await client.set_model_locales(info.id, dict(descriptions), replace=replace)
     except LLMError as exc:
         return {"error": _dev_error(exc)}
     raw = updated.get("translations")
     translations = raw if isinstance(raw, dict) else {}
     filled = [loc for loc in _LOCALES if isinstance(e := translations.get(loc), dict) and str(e.get("description") or "").strip()]
     return {"model": info.name, "filled": filled, "missing": [loc for loc in _LOCALES if loc not in filled]}
+
+
+def _pick_model(query: str, catalogue: list[ModelInfo]) -> ModelInfo | None:
+    """Resolve a model name/alias/fragment to its catalogue entry, or None if no single match."""
+    found = lookup.pick(query, [m.name for m in catalogue])
+    if found.name is None:
+        return None
+    return next((m for m in catalogue if m.name == found.name), None)
+
+
+@mcp.tool()
+async def create_model(
+    name: str,
+    developer_id: str,
+    input_token_price: float,
+    output_token_price: float,
+    descriptions: dict[str, str],
+    *,
+    purpose: str = "chat",
+    context_window: int | None = None,
+    max_output_tokens: int | None = None,
+    supports_tools: bool = False,
+    supports_images: bool = False,
+    supports_reasoning: bool = False,
+    reasoning_efforts: list[str] | None = None,
+    default_reasoning_effort: str | None = None,
+    version_fallback: str | None = None,
+    model_fallback: str | None = None,
+    pretty_name: str | None = None,
+    pricing_category: str = "normal",
+    input_cache_price: float = 0.0,
+    supports_temperature: bool = True,
+) -> dict[str, Any]:
+    """Mutates the catalog. Create a complete model — the gateway rejects anything half-built. Needs an admin key.
+
+    A model is never created bare: supply at least one fallback, the capability/parameter flags, and a
+    description for every one of the 10 locales. Prices are USD per 1M tokens. After this, add deployments
+    with ``create_deployment`` — a model with no routable deployment cannot serve traffic.
+
+    Args:
+        name: public id callers use (must be unique).
+        developer_id: who built it (a row in ``developers``).
+        input_token_price: USD per 1M input tokens.
+        output_token_price: USD per 1M output tokens.
+        descriptions: locale code -> description; all 10 required (ar de en es fr it ja ko pt zh).
+        purpose: chat (default), embed, decision, images, tts, audio, video, ...; chat needs context_window + max_output_tokens.
+        context_window: prompt+completion ceiling; required for chat/embed/decision.
+        max_output_tokens: output ceiling; required for chat.
+        supports_tools: whether the model takes tool/function definitions.
+        supports_images: vision — whether the model accepts image inputs.
+        supports_reasoning: thinking — whether the model reasons; needs reasoning_efforts.
+        reasoning_efforts: effort levels accepted; required when supports_reasoning is true.
+        default_reasoning_effort: effort sent when the caller names none; must be one of reasoning_efforts.
+        version_fallback: cheaper/older same-family model (name or alias), tried first.
+        model_fallback: a model on another vendor/plan (name or alias) — the rung leaving the family.
+        pretty_name: human-readable label, e.g. "Claude Opus 5.5".
+        pricing_category: cost tier (normal / cheap).
+        input_cache_price: USD per 1M cached input tokens.
+        supports_temperature: false when the model 400s on temperature/top_p.
+    """
+    unknown = sorted(set(descriptions) - set(_LOCALES))
+    if unknown:
+        return {"error": f"Unknown locale(s): {', '.join(unknown)}. Valid: {' '.join(_LOCALES)}"}
+    if version_fallback is None and model_fallback is None:
+        return {"error": "at least one fallback is required: pass version_fallback and/or model_fallback (a model name)"}
+    try:
+        async with _client() as client:
+            catalogue = await client.list_models()
+            fallbacks: dict[str, str] = {}
+            for field, ref in (("version_fallback", version_fallback), ("model_fallback", model_fallback)):
+                if ref is None:
+                    continue
+                info = _pick_model(ref, catalogue)
+                if info is None:
+                    return {"error": f"{field}: no model matches {ref!r}"}
+                fallbacks[field] = info.id
+            payload: dict[str, Any] = {
+                "name": name,
+                "developer_id": developer_id,
+                "purpose": purpose,
+                "pretty_name": pretty_name,
+                "pricing_category": pricing_category,
+                "supports_tools": supports_tools,
+                "supports_images": supports_images,
+                "supports_reasoning": supports_reasoning,
+                "input_token_price": input_token_price,
+                "output_token_price": output_token_price,
+                "input_cache_price": input_cache_price,
+                "context_window": context_window,
+                "max_output_tokens": max_output_tokens,
+                "reasoning_efforts": reasoning_efforts,
+                "default_reasoning_effort": default_reasoning_effort,
+                "supports_temperature": supports_temperature,
+                "translations": {loc: {"description": text} for loc, text in descriptions.items()},
+                **fallbacks,
+            }
+            created = await client.create_model({k: v for k, v in payload.items() if v is not None})
+    except LLMError as exc:
+        return {"error": _dev_error(exc)}
+    return {
+        "created": True,
+        "id": created.get("id"),
+        "name": created.get("name"),
+        "next": f"add a deployment with create_deployment(model='{created.get('name')}', ...); a model with no route cannot serve.",
+    }
+
+
+@mcp.tool()
+async def create_deployment(
+    model: str,
+    api_provider_id: str,
+    hosting_provider_id: str,
+    credentials_id: str,
+    name: str | None = None,
+    provider_model_id: str = "",
+    provider_region: str = "",
+    priority: int = 1,
+    ktpm: int | None = None,
+    max_output_tokens: int | None = None,
+    status: str = "ACTIVE",
+) -> dict[str, Any]:
+    """Mutates the catalog. Point one route at a model on one account. Needs an admin key.
+
+    After creating, qualify it before it carries real traffic — the returned ``next_steps`` name the two:
+    ``verify_profile`` (do the catalog's capability claims hold on this endpoint?) and ``heavy_test`` with
+    ``deployment=<id>`` (does it hold under load?). Both reach the new endpoint even while it is INACTIVE.
+
+    Args:
+        model: the model this route serves (name or alias).
+        api_provider_id: API dialect/adapter slug (e.g. openai, azure, anthropic) — how Gate speaks to it.
+        hosting_provider_id: whose infra serves it (e.g. azure, bedrock, scaleway).
+        credentials_id: the deployment_credentials account id (uuid) for that hosting provider.
+        name: human label; defaults to the model name.
+        provider_model_id: the id sent upstream (e.g. eu.anthropic.claude-sonnet-5); defaults to the model name.
+        provider_region: wire region (e.g. eu-west-3, swedencentral); Bedrock/Azure need it or the row goes ERROR.
+        priority: rotation priority bucket (>=1).
+        ktpm: thousands of tokens/min — the rotation weight within the bucket.
+        max_output_tokens: output ceiling this endpoint accepts; null inherits the model's.
+        status: initial health (ACTIVE by default; INACTIVE to stage it out of rotation until qualified).
+    """
+    try:
+        async with _client() as client:
+            info = _pick_model(model, await client.list_models())
+            if info is None:
+                return {"error": f"no model matches {model!r}"}
+            payload: dict[str, Any] = {
+                "model_id": info.id,
+                "name": name or info.name,
+                "api_provider_id": api_provider_id,
+                "hosting_provider_id": hosting_provider_id,
+                "credentials_id": credentials_id,
+                "provider_model_id": provider_model_id,
+                "provider_region": provider_region,
+                "priority": priority,
+                "status": status,
+                "ktpm": ktpm,
+                "max_output_tokens": max_output_tokens,
+            }
+            result = await client.create_deployment({k: v for k, v in payload.items() if v is not None})
+    except LLMError as exc:
+        return {"error": _dev_error(exc)}
+    deployment = result.get("deployment") if isinstance(result, dict) else None
+    dep_id = deployment.get("id") if isinstance(deployment, dict) else None
+    return {"created": True, "id": dep_id, "model": info.name, "next_steps": result.get("next_steps") if isinstance(result, dict) else None}
+
+
+@mcp.tool()
+async def update_deployment(
+    deployment_id: str,
+    priority: int | None = None,
+    ktpm: int | None = None,
+    max_output_tokens: int | None = None,
+    status: str | None = None,
+    input_token_price: float | None = None,
+    output_token_price: float | None = None,
+    input_cache_price: float | None = None,
+) -> dict[str, Any]:
+    """Mutates the catalog. Change a deployment's priority, ktpm, output ceiling, prices or status. Needs an admin key.
+
+    Only the arguments you pass are changed. The id comes from ``create_deployment``'s result or the dashboard.
+    Prices are USD per 1M tokens and override the model's for this one endpoint.
+
+    Args:
+        deployment_id: the deployment's uuid.
+        priority: rotation priority bucket (>=1).
+        ktpm: thousands of tokens/min — the rotation weight in the bucket.
+        max_output_tokens: output ceiling this endpoint accepts.
+        status: ACTIVE, INACTIVE, TEMPORARY_ERROR, RATE_LIMITED, ... (only ACTIVE/TEMPORARY_ERROR/RATE_LIMITED route).
+        input_token_price: USD/1M input tokens override for this endpoint.
+        output_token_price: USD/1M output tokens override for this endpoint.
+        input_cache_price: USD/1M cached input tokens override for this endpoint.
+    """
+    pairs = (
+        ("priority", priority),
+        ("ktpm", ktpm),
+        ("max_output_tokens", max_output_tokens),
+        ("status", status),
+        ("input_token_price", input_token_price),
+        ("output_token_price", output_token_price),
+        ("input_cache_price", input_cache_price),
+    )
+    changes: dict[str, Any] = {k: v for k, v in pairs if v is not None}
+    if not changes:
+        return {"error": "nothing to change: pass at least one field (priority, ktpm, max_output_tokens, status, or a price)"}
+    try:
+        async with _client() as client:
+            updated = await client.update_deployment(deployment_id, changes)
+    except LLMError as exc:
+        return {"error": _dev_error(exc)}
+    return {"updated": True, "id": updated.get("id"), "changed": sorted(changes)}
+
+
+@mcp.tool()
+async def update_model(
+    model: str,
+    input_token_price: float | None = None,
+    output_token_price: float | None = None,
+    input_cache_price: float | None = None,
+    pricing_category: str | None = None,
+) -> dict[str, Any]:
+    """Mutates the catalog. Adjust a model's token prices or cost tier. Needs an admin key.
+
+    Prices are USD per 1M tokens and apply to every deployment that does not override them.
+
+    Args:
+        model: registered name, alias, or a few words of one.
+        input_token_price: USD/1M input tokens.
+        output_token_price: USD/1M output tokens.
+        input_cache_price: USD/1M cached input tokens.
+        pricing_category: cost tier (normal / cheap).
+    """
+    pairs = (
+        ("input_token_price", input_token_price),
+        ("output_token_price", output_token_price),
+        ("input_cache_price", input_cache_price),
+        ("pricing_category", pricing_category),
+    )
+    changes: dict[str, Any] = {k: v for k, v in pairs if v is not None}
+    if not changes:
+        return {
+            "error": "nothing to change: pass at least one of input_token_price, output_token_price, input_cache_price, pricing_category"
+        }
+    try:
+        async with _client() as client:
+            info = _pick_model(model, await client.list_models())
+            if info is None:
+                return {"error": f"no model matches {model!r}"}
+            updated = await client.update_model(info.id, changes)
+    except LLMError as exc:
+        return {"error": _dev_error(exc)}
+    return {
+        "updated": True,
+        "model": info.name,
+        "changed": sorted(changes),
+        "prices": {k: updated.get(k) for k in ("input_token_price", "output_token_price", "input_cache_price")},
+    }
+
+
+@mcp.tool()
+async def list_credentials() -> dict[str, Any]:
+    """Free. Credential accounts you can deploy against — name, hosting provider and deployment count only. Needs an admin key.
+
+    Never returns api keys or endpoints. Use it to find the credentials_id and hosting_provider_id for ``create_deployment``
+    (e.g. the OpenRouter account to add a new OpenRouter model to).
+    """
+    try:
+        async with _client() as client:
+            creds = await client.admin_credentials()
+    except LLMError as exc:
+        return {"error": _dev_error(exc)}
+    return {"count": len(creds), "credentials": creds}
+
+
+@mcp.tool()
+async def list_providers() -> dict[str, Any]:
+    """Free. The API dialects and infra providers a deployment can use, for ``create_deployment``. Needs an admin key."""
+    try:
+        async with _client() as client:
+            api = await client.admin_api_providers()
+            hosting = await client.admin_hosting_providers()
+    except LLMError as exc:
+        return {"error": _dev_error(exc)}
+    return {"api_providers": api, "hosting_providers": hosting}
 
 
 @mcp.tool()
