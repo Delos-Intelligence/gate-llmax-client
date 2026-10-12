@@ -128,7 +128,7 @@ async def ping() -> dict[str, Any]:
 
 @mcp.tool()
 async def list_models(purpose: str | None = None, search: str | None = None) -> dict[str, Any]:
-    """Free. Model names on the gateway, grouped by purpose then developer. Names only — call ``resolve`` for one model's details.
+    """Free. Model names on the gateway, grouped by purpose then developer; ``deprecated`` lists those slated for removal.
 
     Args:
         purpose: keep one purpose (chat, embed, audio, vision, images, tts, audio_isolation, dubbing, video).
@@ -153,7 +153,10 @@ async def list_models(purpose: str | None = None, search: str | None = None) -> 
     for developers in grouped.values():
         for names in developers.values():
             names.sort()
-    return {"count": len(models), "models": {p: dict(sorted(d.items())) for p, d in sorted(grouped.items())}}
+    out: dict[str, Any] = {"count": len(models), "models": {p: dict(sorted(d.items())) for p, d in sorted(grouped.items())}}
+    if deprecated := sorted(m.name for m in models if m.status == "DEPRECATED"):
+        out["deprecated"] = deprecated
+    return out
 
 
 @mcp.tool()
@@ -281,6 +284,7 @@ def _model_details(info: ModelInfo | None) -> dict[str, Any]:
         return {}
     supports = [k.removeprefix("supports_") for k, v in info.capabilities.model_dump().items() if v]
     out: dict[str, Any] = {
+        "status": info.status,
         "developer": lookup.developer_of(info.name, info.developer_id),
         "supports": supports,
         "usd_per_mtok": {"in": info.input_token_price, "out": info.output_token_price, "cached_in": info.input_cache_price},
@@ -603,8 +607,9 @@ async def update_model(
     output_token_price: float | None = None,
     input_cache_price: float | None = None,
     pricing_category: str | None = None,
+    status: str | None = None,
 ) -> dict[str, Any]:
-    """Mutates the catalog. Adjust a model's token prices or cost tier. Needs an admin key.
+    """Mutates the catalog. Adjust a model's token prices, cost tier or lifecycle status. Needs an admin key.
 
     Prices are USD per 1M tokens and apply to every deployment that does not override them.
 
@@ -614,18 +619,18 @@ async def update_model(
         output_token_price: USD/1M output tokens.
         input_cache_price: USD/1M cached input tokens.
         pricing_category: cost tier (normal / cheap).
+        status: ACTIVE, DEPRECATED (still listed, flagged) or RETIRED (hidden from listings).
     """
     pairs = (
         ("input_token_price", input_token_price),
         ("output_token_price", output_token_price),
         ("input_cache_price", input_cache_price),
         ("pricing_category", pricing_category),
+        ("status", status.upper() if status else None),
     )
     changes: dict[str, Any] = {k: v for k, v in pairs if v is not None}
     if not changes:
-        return {
-            "error": "nothing to change: pass at least one of input_token_price, output_token_price, input_cache_price, pricing_category"
-        }
+        return {"error": "nothing to change: pass at least one of " + ", ".join(k for k, _ in pairs)}
     try:
         async with _client() as client:
             info = _pick_model(model, await client.list_models())
@@ -639,6 +644,7 @@ async def update_model(
         "model": info.name,
         "changed": sorted(changes),
         "prices": {k: updated.get(k) for k in ("input_token_price", "output_token_price", "input_cache_price")},
+        "status": updated.get("status"),
     }
 
 

@@ -54,6 +54,7 @@ class ModelInfo(BaseModel):
     pretty_name: str | None = None
     developer_id: str | None = None
     purpose: ModelPurpose = ModelPurpose.CHAT
+    status: str = Field(default="ACTIVE", description="Lifecycle: ACTIVE, or DEPRECATED (still served, slated for removal).")
     capabilities: ModelCapabilities
     input_token_price: float = Field(description="USD per 1M input tokens")
     output_token_price: float = Field(description="USD per 1M output tokens")
