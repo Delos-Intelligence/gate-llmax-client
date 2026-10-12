@@ -27,12 +27,16 @@ class TranscriptionSegment(BaseModel):
     end: float = Field(default=0.0, description="Segment end time in seconds.")
     text: str = Field(default="", description="Transcript text for this segment.")
     speaker: str | None = Field(default=None, description="Speaker label, set only when ``diarize`` was requested.")
+    avg_logprob: float | None = Field(default=None, description="Whisper's mean token log-probability for the segment.")
+    no_speech_prob: float | None = Field(default=None, description="Whisper's probability that the segment is silence.")
+    compression_ratio: float | None = Field(default=None, description="Whisper's gzip ratio; a high value flags a repetition loop.")
 
 
 class AudioResponse(LLMCallRecord):
     """Response from ``/v1/audio/transcriptions`` — Gate call metadata + transcript text."""
 
     text: str = ""
+    language: str | None = Field(default=None, description="Language the provider detected or was told, when it reports one.")
     segments: list[TranscriptionSegment] = Field(
         default_factory=list,
         description="Timestamped segments; empty unless the provider reports them.",

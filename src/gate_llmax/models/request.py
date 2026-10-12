@@ -19,6 +19,9 @@ class CallControl(BaseModel):
 
     max_tries: int | None = Field(default=None, description="Per-call upstream attempts, including the first.")
     timeout: int | None = Field(default=None, description="Per-call upstream timeout in seconds.")
+    stream_idle_timeout: int | None = Field(
+        default=None, description="Seconds a stream may go silent (before its first token or between two) before Gate fails it over."
+    )
     operation: str = Field(default="", description="Caller-supplied usage tag; echoed onto RawUsage and the usage log row.")
     deployment_id: str | None = Field(
         default=None,
@@ -110,6 +113,10 @@ class RequestSpecifics(BaseModel):
     )
     reasoning: bool | None = None
     reasoning_effort: ReasoningEffort | None = None
+    reasoning_budget_tokens: int | None = Field(
+        default=None,
+        description="Thinking budget in tokens, sent as-is where the model takes one and mapped to the nearest effort elsewhere.",
+    )
     prompt_cache_key: str | None = Field(
         default=None,
         description=(

@@ -10,6 +10,9 @@ import httpx
 from gate_llmax.exceptions import (
     LLMAuthError,
     LLMCapabilityError,
+    LLMContentFilterError,
+    LLMContextOverflowError,
+    LLMEmptyResponseError,
     LLMError,
     LLMModelNotFoundError,
     LLMServerError,
@@ -28,6 +31,11 @@ ERROR_STATUS_EXCEPTIONS: dict[int, type[LLMError]] = {
     422: LLMCapabilityError,
     504: LLMTimeoutError,
 }
+ERROR_TYPE_EXCEPTIONS: dict[str, type[LLMError]] = {
+    "content_filter": LLMContentFilterError,
+    "context_length_exceeded": LLMContextOverflowError,
+    "empty_response": LLMEmptyResponseError,
+}
 
 
 def stream_error(payload: dict) -> LLMError:
@@ -38,7 +46,7 @@ def stream_error(payload: dict) -> LLMError:
     message = str(error.get("message") or payload.get("message") or "Gate stream failed")
     code = error.get("code")
     status = code if isinstance(code, int) else 0
-    exception_type = ERROR_STATUS_EXCEPTIONS.get(status, LLMServerError)
+    exception_type = ERROR_TYPE_EXCEPTIONS.get(str(error.get("type")), ERROR_STATUS_EXCEPTIONS.get(status, LLMServerError))
     return exception_type(f"{message} (stream error {status or 'unknown'})")
 
 

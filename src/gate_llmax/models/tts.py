@@ -36,3 +36,4 @@ class TTSResponse(BaseAudioResponse):
     """Response from ``/v1/audio/speech`` — Gate call metadata + base64-encoded audio bytes."""
 
     response_format: str = "mp3"
+    mime_type: str | None = Field(default=None, description="MIME type of the returned audio bytes.")

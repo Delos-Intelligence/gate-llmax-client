@@ -39,6 +39,10 @@ class LLMServerError(LLMError):
     """Raised for unexpected 5xx responses from the gateway."""
 
 
+class LLMEmptyResponseError(LLMServerError):
+    """Raised when every model the gateway tried finished without visible text or a tool call."""
+
+
 class LLMBudgetError(LLMError):
     """Raised before dispatch when a registered ``.budget()`` check denies the call."""
 
