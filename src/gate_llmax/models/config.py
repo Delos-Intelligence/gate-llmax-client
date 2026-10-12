@@ -59,6 +59,7 @@ class ModelInfo(BaseModel):
     input_token_price: float = Field(description="USD per 1M input tokens")
     output_token_price: float = Field(description="USD per 1M output tokens")
     input_cache_price: float = Field(description="USD per 1M cached input tokens", default=0.0)
+    pricing_category: str = Field(default="normal", description="Cost tier: normal or cheap.")
     max_output_tokens: int | None = None
     context_window: int | None = None
     tools_frozen: bool = Field(default=False, description="Declared tool array is fixed; discovered tools are proxied, not appended.")
