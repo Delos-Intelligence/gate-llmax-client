@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
 class DeploymentStatus(StrEnum):
@@ -46,6 +46,51 @@ class ModelCapabilities(BaseModel):
     supports_reasoning: bool = False
 
 
+class InputImageLimits(BaseModel):
+    """What one input image may weigh before Gate re-encodes it for the upstream."""
+
+    max_bytes: int | None = None
+    max_edge: int | None = None
+
+
+class ImageLimits(BaseModel):
+    """Output rules for an image model; ``partial_images`` means it streams progressive frames."""
+
+    max_dim: int | None = None
+    min_megapixels: float | None = None
+    step: int = 1
+    free_size: bool = False
+    aspect_ratios: list[str] | None = None
+    max_reference_images: int | None = None
+    partial_images: bool = False
+
+
+class VideoLimits(BaseModel):
+    """Clip rules for a video model; ``reference_durations`` / ``end_frame_durations`` replace ``durations`` when those inputs drive it."""
+
+    resolutions: list[str] | None = None
+    durations: list[int] | None = None
+    reference_images: bool = True
+    reference_durations: list[int] | None = None
+    max_reference_images: int | None = None
+    end_frame: bool = True
+    end_frame_durations: list[int] | None = None
+    extend: bool = False
+
+
+class ModelTraits(BaseModel):
+    """Per-model quirks and limits Gate branches on, editable in the catalog without a deploy."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    tool_call_dialect: Literal["called"] | None = None
+    reasoning_tags: str | None = None
+    max_tools: int | None = None
+    input_image: InputImageLimits | None = None
+    image: ImageLimits | None = None
+    video: VideoLimits | None = None
+
+
 class ModelInfo(BaseModel):
     """Public metadata for a registered model."""
 
@@ -66,6 +111,7 @@ class ModelInfo(BaseModel):
     max_tries: int = 2
     timeout: int = 120
     extra_attributes: dict[str, Any] = Field(default_factory=dict, description="Arbitrary per-model attributes (e.g. selection weights).")
+    traits: ModelTraits = Field(default_factory=ModelTraits, description="Typed limits: input images, image output, video clip rules.")
     translations: dict[str, dict[str, str]] = Field(
         default_factory=dict,
         description='Per-locale description overrides, e.g. {"fr": {"description": "…"}}; the name stays pretty_name across locales.',
