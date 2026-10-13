@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .models.response import ContentFilter
+
 
 class LLMError(Exception):
     """Base exception for all Gate client errors."""
@@ -28,7 +33,12 @@ class LLMCapabilityError(LLMError):
 
 
 class LLMContentFilterError(LLMError):
-    """Raised when the upstream safety/content filter rejected the prompt (HTTP 400)."""
+    """Raised when the upstream safety/content filter rejected the prompt (HTTP 400); ``content_filter`` says why when known."""
+
+    def __init__(self, message: str, content_filter: ContentFilter | None = None) -> None:
+        """Keep the structured verdict beside the message."""
+        super().__init__(message)
+        self.content_filter = content_filter
 
 
 class LLMContextOverflowError(LLMError):

@@ -339,6 +339,15 @@ class StreamChunk(BaseModel):
         )
 
 
+class ContentFilter(BaseModel):
+    """Why an upstream safety system withheld an answer, in a shape that is the same whichever provider refused."""
+
+    source: Literal["prompt", "response", "media"] | None = Field(default=None, description="What was judged: the input, or the output.")
+    categories: list[str] = Field(default_factory=list, description="The categories that tripped, e.g. hate, sexual, violence.")
+    severity: dict[str, str] = Field(default_factory=dict, description="Category to the provider's severity label, when it reports one.")
+    reasons: list[str] = Field(default_factory=list, description="The provider's own reason codes (refusal, SAFETY, RAI reasons).")
+
+
 class LLMCallRecord(BaseModel):
     """Metadata shared by every Gate call (chat, images, audio, tts, embed).
 
@@ -362,6 +371,7 @@ class LLMCallRecord(BaseModel):
             "success. The status says a request was refused; this says what to change about it."
         ),
     )
+    content_filter: ContentFilter | None = Field(default=None, description="Set when status is CONTENT_FILTER and the upstream said why.")
     latency_ms: int = 0
     cached: bool = Field(default=False, description="True when this response was replayed from the gateway response cache.")
 

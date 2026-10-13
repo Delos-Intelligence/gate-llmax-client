@@ -32,6 +32,7 @@ from gate_llmax.models.ocr import OCRDocument, OCRRequest, OCRResponse
 from gate_llmax.models.realtime import RealtimeSessionConfig
 from gate_llmax.models.request import LLMRequest, RequestSpecifics, ResolveRequest, ZoneSelection
 from gate_llmax.models.response import (
+    ContentFilter,
     LLMCallRecord,
     LLMResponse,
     MulticallStreamFrame,
@@ -1916,7 +1917,7 @@ def _raise_for_status(response: httpx.Response) -> None:
     if code == 404:
         raise LLMModelNotFoundError(_extract_detail(response.text))
     if code == 400:
-        raise LLMContentFilterError(_extract_detail(response.text))
+        raise LLMContentFilterError(_extract_detail(response.text), content_filter_of(response.text))
     if code == 413:
         raise LLMContextOverflowError(_extract_detail(response.text))
     if code == 422:
@@ -1925,6 +1926,15 @@ def _raise_for_status(response: httpx.Response) -> None:
         raise LLMServerError(f"Gateway server error {code}: {_extract_detail(response.text)}")
     if code >= 400:
         response.raise_for_status()
+
+
+def content_filter_of(text: str) -> ContentFilter | None:
+    """The structured verdict a gateway error body carries next to ``detail``, if any."""
+    try:
+        verdict = json.loads(text).get("content_filter")
+    except (json.JSONDecodeError, AttributeError):
+        return None
+    return ContentFilter.model_validate(verdict) if isinstance(verdict, dict) else None
 
 
 def _extract_detail(text: str) -> str:

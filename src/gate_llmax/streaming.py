@@ -18,7 +18,7 @@ from gate_llmax.exceptions import (
     LLMServerError,
     LLMTimeoutError,
 )
-from gate_llmax.models.response import StreamChunk
+from gate_llmax.models.response import ContentFilter, StreamChunk
 
 # The gateway cannot change the HTTP status once the 200 SSE headers are flushed, so a terminal
 # failure arrives as a final `{"error": {...}}` frame. Mapped to the same exceptions the buffered
@@ -47,7 +47,10 @@ def stream_error(payload: dict) -> LLMError:
     code = error.get("code")
     status = code if isinstance(code, int) else 0
     exception_type = ERROR_TYPE_EXCEPTIONS.get(str(error.get("type")), ERROR_STATUS_EXCEPTIONS.get(status, LLMServerError))
-    return exception_type(f"{message} (stream error {status or 'unknown'})")
+    text = f"{message} (stream error {status or 'unknown'})"
+    if exception_type is LLMContentFilterError and isinstance(verdict := error.get("content_filter"), dict):
+        return LLMContentFilterError(text, ContentFilter.model_validate(verdict))
+    return exception_type(text)
 
 
 class StreamResponse:

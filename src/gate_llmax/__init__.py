@@ -45,6 +45,7 @@ from gate_llmax.models.realtime import (
 from gate_llmax.models.request import BestTarget, CallControl, RequestSpecifics, ResolveRequest, ZoneSelection
 from gate_llmax.models.response import (
     BaseAudioResponse,
+    ContentFilter,
     LLMCallRecord,
     LLMResponse,
     MulticallStreamFrame,
@@ -128,6 +129,7 @@ __all__ = [
     "ByokDialect",
     "ByokPlan",
     "CallControl",
+    "ContentFilter",
     "DecisionAnswer",
     "DecisionQuestion",
     "DecisionRequest",
