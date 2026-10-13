@@ -279,7 +279,7 @@ wheels = [
 
 [[package]]
 name = "gate-llmax"
-version = "0.4.61"
+version = "0.4.62"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
