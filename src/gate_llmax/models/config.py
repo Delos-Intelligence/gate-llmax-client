@@ -86,6 +86,8 @@ class ModelTraits(BaseModel):
     tool_call_dialect: Literal["called"] | None = None
     reasoning_tags: str | None = None
     max_tools: int | None = None
+    audio_input: bool = False
+    video_input: bool = False
     input_image: InputImageLimits | None = None
     image: ImageLimits | None = None
     video: VideoLimits | None = None

@@ -1,4 +1,4 @@
-"""Message types for Gate requests (chat roles + text / image content blocks)."""
+"""Message types for Gate requests (chat roles + text / image / audio / video content blocks)."""
 
 from __future__ import annotations
 
@@ -58,11 +58,41 @@ class ImageMessage(BaseModel):
         return self
 
 
+class AudioMessage(BaseModel):
+    """Audio segment as raw base64 (no data: prefix); only models with the ``audio_input`` trait take it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    b64: str
+    format: str = Field(default="wav", description="Container of the bytes: wav or mp3 travel everywhere audio input does.")
+
+
+class VideoMessage(BaseModel):
+    """Video segment: exactly one of raw base64 or a URL; only models with the ``video_input`` trait take it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    b64: str | None = None
+    url: str | None = None
+    media_type: str = Field(default="video/mp4", description="MIME type of the video bytes.")
+
+    @model_validator(mode="after")
+    def exactly_one_video_source(self) -> Self:
+        """Validate that exactly one of b64 or url is provided."""
+        if bool(self.b64) == bool(self.url):
+            msg = "VideoMessage requires exactly one of b64 or url (non-empty)"
+            raise ValueError(msg)
+        return self
+
+
+type ContentBlock = TextMessage | ImageMessage | AudioMessage | VideoMessage
+
+
 class Message(BaseModel):
     """A single turn in a conversation."""
 
     role: MessageRole
-    content: list[TextMessage | ImageMessage] = Field(default_factory=list)
+    content: list[ContentBlock] = Field(default_factory=list)
     tool_call_id: str | None = None
     name: str | None = None
     tool_calls: list[ToolCall] | None = Field(
@@ -90,7 +120,7 @@ class Message(BaseModel):
     @classmethod
     def assistant_tool_calls(cls, tool_calls: list[ToolCall], content: str = "") -> Message:
         """Create an assistant turn that requested ``tool_calls`` (optional accompanying text)."""
-        blocks: list[TextMessage | ImageMessage] = [TextMessage(text=content)] if content else []
+        blocks: list[ContentBlock] = [TextMessage(text=content)] if content else []
         return cls(role=MessageRole.ASSISTANT, content=blocks, tool_calls=tool_calls)
 
     @classmethod
@@ -102,7 +132,7 @@ class Message(BaseModel):
         images: list[ImageMessage] | None = None,
     ) -> Message:
         """Create a tool-result message answering a prior tool call, with the images the tool returned."""
-        blocks: list[TextMessage | ImageMessage] = [TextMessage(text=content), *(images or [])]
+        blocks: list[ContentBlock] = [TextMessage(text=content), *(images or [])]
         return cls(role=MessageRole.TOOL, content=blocks, tool_call_id=tool_call_id, name=name)
 
     @classmethod
@@ -141,7 +171,7 @@ class Message(BaseModel):
         return cls(role=MessageRole.USER, content=blocks or [TextMessage(text="")])
 
 
-def _content_blocks(content: Any) -> list[TextMessage | ImageMessage]:
+def _content_blocks(content: Any) -> list[ContentBlock]:
     """Parse OpenAI message ``content`` (str or multimodal list) into Gate content blocks.
 
     ``image_url`` parts become ``ImageMessage`` (base64 from a ``data:`` URI, else the raw URL).
@@ -150,32 +180,51 @@ def _content_blocks(content: Any) -> list[TextMessage | ImageMessage]:
         return []
     if isinstance(content, str):
         return [TextMessage(text=content)] if content else []
-    blocks: list[TextMessage | ImageMessage] = []
+    blocks: list[ContentBlock] = []
     for part in content:
         if not isinstance(part, dict):
             logger.warning("ignoring non-dict content part: %r", type(part).__name__)
-            continue
-        part_type = part.get("type")
-        if part_type == "text":
-            blocks.append(TextMessage(text=part.get("text", "")))
-        elif part_type == "image_url":
-            image_url = part.get("image_url") or {}
-            url = image_url.get("url", "")
-            detail = image_url.get("detail")
-            if url.startswith("data:") and ";base64," in url:
-                header, b64 = url.split(";base64,", 1)
-                blocks.append(ImageMessage(b64=b64, media_type=header.removeprefix("data:") or None, detail=detail))
-            elif url:
-                blocks.append(ImageMessage(url=url, detail=detail))
-        elif part_type == "image":
-            block = _anthropic_image_block(part.get("source") or {})
-            if block is not None:
-                blocks.append(block)
-            else:
-                logger.warning("ignoring unparseable anthropic image part: %r", part.get("source"))
+        elif (block := _content_block(part)) is not None:
+            blocks.append(block)
         else:
-            logger.warning("ignoring unknown content part type: %r", part_type)
+            logger.warning("ignoring unparseable %r content part", part.get("type"))
     return blocks
+
+
+def _data_uri(url: str) -> tuple[str, str] | None:
+    """(media type, base64) of a ``data:`` URI, or None for a plain URL."""
+    if not url.startswith("data:") or ";base64," not in url:
+        return None
+    header, b64 = url.split(";base64,", 1)
+    return header.removeprefix("data:"), b64
+
+
+def _content_block(part: dict[str, Any]) -> ContentBlock | None:
+    """One OpenAI or Anthropic content part as a Gate block; video may ride ``image_url`` as Gemini's wire spells it."""
+    part_type = part.get("type")
+    if part_type == "text":
+        return TextMessage(text=part.get("text", ""))
+    if part_type == "input_audio":
+        audio = part.get("input_audio") or {}
+        return AudioMessage(b64=audio["data"], format=audio.get("format") or "wav") if audio.get("data") else None
+    if part_type == "image":
+        return _anthropic_image_block(part.get("source") or {})
+    if part_type in ("image_url", "video_url"):
+        return _url_block(part_type, part.get(part_type) or {})
+    return None
+
+
+def _url_block(part_type: str, ref: dict[str, Any]) -> ImageMessage | VideoMessage | None:
+    """An ``image_url`` / ``video_url`` part, inline or by URL; an inline ``video/*`` payload is video whatever the part says."""
+    url = ref.get("url", "")
+    if not url:
+        return None
+    inline = _data_uri(url)
+    if part_type == "video_url" or (inline is not None and inline[0].startswith("video/")):
+        return VideoMessage(b64=inline[1], media_type=inline[0] or "video/mp4") if inline else VideoMessage(url=url)
+    if inline is not None:
+        return ImageMessage(b64=inline[1], media_type=inline[0] or None, detail=ref.get("detail"))
+    return ImageMessage(url=url, detail=ref.get("detail"))
 
 
 def _anthropic_image_block(source: dict[str, Any]) -> ImageMessage | None:
@@ -187,10 +236,14 @@ def _anthropic_image_block(source: dict[str, Any]) -> ImageMessage | None:
     return None
 
 
-def content_block_to_openai(block: TextMessage | ImageMessage) -> JsonDict:
-    """Map a Gate content block to an OpenAI chat `content` element."""
+def content_block_to_openai(block: ContentBlock) -> JsonDict:
+    """Map a Gate content block to an OpenAI chat `content` element; video rides ``image_url``, the form Gemini's OpenAI wire reads."""
     if isinstance(block, TextMessage):
         return {"type": "text", "text": block.text}
+    if isinstance(block, AudioMessage):
+        return {"type": "input_audio", "input_audio": {"data": block.b64, "format": block.format}}
+    if isinstance(block, VideoMessage):
+        return {"type": "image_url", "image_url": {"url": block.url or f"data:{block.media_type};base64,{block.b64}"}}
     detail = block.detail or "high"
     if block.url is not None:
         return {"type": "image_url", "image_url": {"url": block.url, "detail": detail}}
@@ -226,7 +279,7 @@ def message_to_openai_dict(msg: Message) -> JsonDict:
     return payload
 
 
-def message_plain_text(content: str | list[TextMessage | ImageMessage]) -> str:
+def message_plain_text(content: str | list[ContentBlock]) -> str:
     """Flatten message content to a single string (text segments only)."""
     if isinstance(content, str):
         return content

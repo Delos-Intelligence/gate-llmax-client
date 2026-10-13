@@ -27,7 +27,7 @@ from gate_llmax.models.decision import DecisionAnswer, DecisionQuestion, Decisio
 from gate_llmax.models.dubbing import DubbingRequest, DubbingResponse
 from gate_llmax.models.embed import EmbedObject, EmbedRequest, EmbedResponse
 from gate_llmax.models.images import ImageData, ImageRequest, ImageResponse
-from gate_llmax.models.messages import ImageMessage, Message, MessageRole, TextMessage
+from gate_llmax.models.messages import AudioMessage, ContentBlock, ImageMessage, Message, MessageRole, TextMessage, VideoMessage
 from gate_llmax.models.ocr import OCRDocument, OCRPage, OCRRequest, OCRResponse
 from gate_llmax.models.realtime import (
     RealtimeAudioData,
@@ -119,6 +119,7 @@ __all__ = [
     "AudioGenResponse",
     "AudioIsolationRequest",
     "AudioIsolationResponse",
+    "AudioMessage",
     "AudioMode",
     "AudioRequest",
     "AudioResponse",
@@ -129,6 +130,7 @@ __all__ = [
     "ByokDialect",
     "ByokPlan",
     "CallControl",
+    "ContentBlock",
     "ContentFilter",
     "DecisionAnswer",
     "DecisionQuestion",
@@ -230,6 +232,7 @@ __all__ = [
     "UsageCallback",
     "VideoCallback",
     "VideoLimits",
+    "VideoMessage",
     "VideoRequest",
     "VideoRequestBuilder",
     "VideoResponse",
