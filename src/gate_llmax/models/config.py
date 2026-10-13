@@ -77,6 +77,8 @@ class VideoLimits(BaseModel):
     end_frame: bool = True
     end_frame_durations: list[int] | None = None
     extend: bool = False
+    extend_resolution: str | None = Field(default=None, description="The one resolution an extension renders at, whatever the source.")
+    negative_prompt: bool = Field(default=True, description="Whether the model takes a negative prompt; some variants reject the field.")
 
 
 class ModelTraits(BaseModel):
@@ -84,7 +86,9 @@ class ModelTraits(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    tool_call_dialect: Literal["called"] | None = None
+    tool_call_dialect: Literal["called", "glm_xml"] | None = Field(
+        default=None, description="How tool calls leak into prose: Gemini's `Called: f({...})` or GLM's `<tool_call>` XML."
+    )
     reasoning_tags: str | None = None
     max_tools: int | None = None
     audio_input: bool = False
@@ -92,6 +96,25 @@ class ModelTraits(BaseModel):
     input_image: InputImageLimits | None = None
     image: ImageLimits | None = None
     video: VideoLimits | None = None
+    unsupported_params: list[str] | None = Field(
+        default=None, description="Sampling params the model 400s on or ignores (temperature, top_p, stop, seed, ...); Gate strips them."
+    )
+    refuses_top_p_when_greedy: bool = Field(default=False, description="Rejects top_p != 1 under temperature 0 (Mistral).")
+    thinking: Literal["effort", "budget"] | None = Field(
+        default=None, description="Claude's thinking knobs: adaptive effort, or a token budget on pre-4.6 Claude; None is the effort wire."
+    )
+    off_levels: bool = Field(default=False, description="`none`/`minimal` switch thinking off instead of being remapped (Claude, Gemini).")
+    effort_with_tools: bool = Field(default=True, description="False when the chat-completions wire 400s on reasoning_effort with tools.")
+    tool_history: Literal["mistral", "google"] | None = Field(
+        default=None, description="Tool-conversation rules to replay history with: Mistral's 9-char ids, Gemini's thought signatures."
+    )
+    wire: Literal["claude", "nova", "openai"] | None = Field(default=None, description="The body dialect a Bedrock deployment speaks.")
+    no_system_role: bool = Field(default=False, description="The chat template has no system role; the system prompt is dropped.")
+    stt_dialect: Literal["whisper"] | None = Field(default=None, description="Transcription formats the model honours (verbose_json).")
+    force_diarize: bool = Field(default=False, description="Labels speakers whether or not the caller asked.")
+    default_voice: str | None = Field(default=None, description="The voice a text-to-speech call uses when the caller names none.")
+    active_params_b: float | None = Field(default=None, description="Active parameters in billions, for the carbon estimate.")
+    wh_per_output_token: float | None = Field(default=None, description="Measured energy per output token, overriding the estimate.")
 
 
 class ModelInfo(BaseModel):

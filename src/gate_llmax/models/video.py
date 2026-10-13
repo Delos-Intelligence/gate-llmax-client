@@ -59,6 +59,7 @@ class VideoRequest(CallControl):
     duration_seconds: VideoDuration = 6
     resolution: VideoResolution = "720p"
     with_audio: bool = False
+    negative_prompt: str | None = Field(default=None, description="What the clip must not contain, for models that take one.")
     reference_images: list[str] | None = Field(
         default=None,
         description="Base64-encoded style/content reference images (max 3).",

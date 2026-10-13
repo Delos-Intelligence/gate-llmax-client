@@ -1114,7 +1114,7 @@ class LLMClient:
         return response.json()
 
     async def update_model(self, model_id: str, changes: JsonDict) -> JsonDict:
-        """PATCH /admin/models/{id} — adjust token prices or cost tier. Needs admin."""
+        """PATCH /admin/models/{id} — adjust prices, tier, status, reasoning ladder or traits (``extra_attributes`` merges). Needs admin."""
         response = await self._http.patch(f"/admin/models/{model_id}", json=changes)
         _raise_for_status(response)
         return response.json()

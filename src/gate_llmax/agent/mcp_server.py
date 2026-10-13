@@ -608,10 +608,15 @@ async def update_model(
     input_cache_price: float | None = None,
     pricing_category: str | None = None,
     status: str | None = None,
+    reasoning_efforts: list[str] | None = None,
+    default_reasoning_effort: str | None = None,
+    supports_prompt_cache_key: bool | None = None,
+    extra_attributes: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Mutates the catalog. Adjust a model's token prices, cost tier or lifecycle status. Needs an admin key.
+    """Mutates the catalog. Adjust a model's prices, cost tier, lifecycle status, reasoning ladder or traits. Needs an admin key.
 
-    Prices are USD per 1M tokens and apply to every deployment that does not override them.
+    Prices are USD per 1M tokens and apply to every deployment that does not override them. ``extra_attributes`` is merged
+    into the row's existing map (typed traits live there: see ``ModelTraits``); pass a key as null to drop it.
 
     Args:
         model: registered name, alias, or a few words of one.
@@ -620,6 +625,10 @@ async def update_model(
         input_cache_price: USD/1M cached input tokens.
         pricing_category: cost tier (normal / cheap).
         status: ACTIVE, DEPRECATED (still listed, flagged) or RETIRED (hidden from listings).
+        reasoning_efforts: the effort levels the model accepts, cheapest first.
+        default_reasoning_effort: the level sent when the caller names none.
+        supports_prompt_cache_key: whether the model understands OpenAI's prompt_cache_key.
+        extra_attributes: trait and attribute keys to merge into the row.
     """
     pairs = (
         ("input_token_price", input_token_price),
@@ -627,6 +636,10 @@ async def update_model(
         ("input_cache_price", input_cache_price),
         ("pricing_category", pricing_category),
         ("status", status.upper() if status else None),
+        ("reasoning_efforts", reasoning_efforts),
+        ("default_reasoning_effort", default_reasoning_effort),
+        ("supports_prompt_cache_key", supports_prompt_cache_key),
+        ("extra_attributes", extra_attributes),
     )
     changes: dict[str, Any] = {k: v for k, v in pairs if v is not None}
     if not changes:
