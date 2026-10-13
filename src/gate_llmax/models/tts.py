@@ -37,3 +37,4 @@ class TTSResponse(BaseAudioResponse):
 
     response_format: str = "mp3"
     mime_type: str | None = Field(default=None, description="MIME type of the returned audio bytes.")
+    output_seconds: float | None = Field(default=None, description="Length of the returned audio, when Gate could measure it.")
