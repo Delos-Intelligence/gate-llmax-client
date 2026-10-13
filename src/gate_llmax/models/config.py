@@ -54,12 +54,13 @@ class InputImageLimits(BaseModel):
 
 
 class ImageLimits(BaseModel):
-    """Output rules for an image model; ``partial_images`` means it streams progressive frames."""
+    """Output rules for an image model; ``sizes`` (``"1024x1536"``) and ``aspect_ratios`` list the only values it renders."""
 
     max_dim: int | None = None
     min_megapixels: float | None = None
     step: int = 1
     free_size: bool = False
+    sizes: list[str] | None = None
     aspect_ratios: list[str] | None = None
     max_reference_images: int | None = None
     partial_images: bool = False
