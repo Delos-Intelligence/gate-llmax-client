@@ -86,6 +86,9 @@ class VideoLimits(BaseModel):
     audio: Literal["none", "optional", "always"] | None = Field(
         default=None, description="Audio track: never, on request (`with_audio`), or always generated; None when unknown."
     )
+    min_duration_by_resolution: dict[str, int] | None = Field(
+        default=None, description="Shortest clip each resolution renders, e.g. Veo's 8 s at 1080p and 4k; shorter asks are lengthened."
+    )
 
 
 class ModelTraits(BaseModel):

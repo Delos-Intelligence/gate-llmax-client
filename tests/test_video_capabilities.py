@@ -64,3 +64,10 @@ def test_video_limits_reject_an_unknown_audio_mode() -> None:
 def test_image_limits_qualities() -> None:
     assert ImageLimits().qualities is None
     assert ImageLimits(qualities=["low", "medium", "high"]).qualities == ["low", "medium", "high"]
+
+
+def test_video_limits_min_duration_by_resolution() -> None:
+    assert VideoLimits().min_duration_by_resolution is None
+    traits = ModelTraits.model_validate({"video": {"resolutions": ["720p", "1080p"], "min_duration_by_resolution": {"1080p": 8}}})
+    assert traits.video is not None
+    assert traits.video.min_duration_by_resolution == {"1080p": 8}
