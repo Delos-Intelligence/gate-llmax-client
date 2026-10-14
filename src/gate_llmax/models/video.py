@@ -10,7 +10,7 @@ from .request import CallControl
 from .response import LLMCallRecord
 
 VideoAspectRatio = Literal["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]
-VideoDuration = Annotated[int, Field(ge=1, le=30)]
+VideoDuration = Annotated[int, Field(ge=1, le=30, strict=True)]
 """Clip length in seconds; each model accepts a subset (its ``VideoLimits.durations``), Gate rejects the rest."""
 VideoResolution = Literal["480p", "720p", "768p", "1080p", "4k"]
 

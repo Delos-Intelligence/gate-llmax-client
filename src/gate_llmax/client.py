@@ -914,7 +914,7 @@ class LLMClient:
             aspect_ratio: ``16:9``, ``9:16``, ``1:1``, ``4:3``, ``3:4`` or ``21:9``; the model's
                 ``VideoLimits.aspect_ratios`` lists what it renders.
             duration_seconds: Clip length, 1 to 30 seconds; the model's ``VideoLimits.durations``
-                lists what it accepts (Veo: 4, 6 or 8).
+                lists what it accepts, and ``min_duration_by_resolution`` may lengthen it.
             resolution: ``480p``, ``720p``, ``768p``, ``1080p`` or ``4k``, within the model's
                 ``VideoLimits.resolutions``.
             with_audio: Whether to generate an audio track.

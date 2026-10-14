@@ -56,9 +56,13 @@ def test_video_limits_parse_from_catalog_attributes() -> None:
     assert traits.video.audio == "always"
 
 
-def test_video_limits_reject_an_unknown_audio_mode() -> None:
+def test_video_limits_keep_an_unknown_audio_mode() -> None:
+    assert VideoLimits.model_validate({"audio": "sometimes"}).audio == "sometimes"
+
+
+def test_video_duration_is_strict() -> None:
     with pytest.raises(ValidationError):
-        VideoLimits.model_validate({"audio": "sometimes"})
+        VideoRequest(model="m", prompt="p", duration_seconds="8")
 
 
 def test_image_limits_qualities() -> None:
