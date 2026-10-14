@@ -64,6 +64,9 @@ class ImageLimits(BaseModel):
     aspect_ratios: list[str] | None = None
     max_reference_images: int | None = None
     partial_images: bool = False
+    qualities: list[str] | None = Field(
+        default=None, description="Quality levels the model takes; None when it takes none or they are unknown."
+    )
 
 
 class VideoLimits(BaseModel):
@@ -79,6 +82,14 @@ class VideoLimits(BaseModel):
     extend: bool = False
     extend_resolution: str | None = Field(default=None, description="The one resolution an extension renders at, whatever the source.")
     negative_prompt: bool = Field(default=True, description="Whether the model takes a negative prompt; some variants reject the field.")
+    aspect_ratios: list[str] | None = Field(default=None, description="Aspect ratios the model renders; None when unknown.")
+    audio: str | None = Field(
+        default=None,
+        description="Audio track: `none`, `optional` (on `with_audio`) or `always`; None when unknown. A str, so new values still parse.",
+    )
+    min_duration_by_resolution: dict[str, int] | None = Field(
+        default=None, description="Shortest clip each resolution renders, e.g. Veo's 8 s at 1080p and 4k; shorter asks are lengthened."
+    )
 
 
 class ModelTraits(BaseModel):
