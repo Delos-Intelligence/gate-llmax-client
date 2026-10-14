@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
 from .request import CallControl
 from .response import LLMCallRecord
 
-VideoAspectRatio = Literal["16:9", "9:16"]
-VideoDuration = Literal[4, 6, 8]
-VideoResolution = Literal["720p", "1080p", "4k"]
+VideoAspectRatio = Literal["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]
+VideoDuration = Annotated[int, Field(ge=1, le=30)]
+"""Clip length in seconds; each model accepts a subset (its ``VideoLimits.durations``), Gate rejects the rest."""
+VideoResolution = Literal["480p", "720p", "768p", "1080p", "4k"]
 
 VIDEO_EXTENSION_SECONDS = 7
 """Seconds one extension appends to ``source_video``; the provider fixes it, the caller cannot pick."""
