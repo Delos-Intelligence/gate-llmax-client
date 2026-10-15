@@ -14,7 +14,7 @@ def test_defaults_are_unchanged() -> None:
     assert (request.aspect_ratio, request.duration_seconds, request.resolution) == ("16:9", 6, "720p")
 
 
-@pytest.mark.parametrize("ratio", ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"])
+@pytest.mark.parametrize("ratio", ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3", "21:9", "9:21"])
 def test_wider_aspect_ratios_are_accepted(ratio: str) -> None:
     assert VideoRequest.model_validate({"model": "m", "prompt": "p", "aspect_ratio": ratio}).aspect_ratio == ratio
 
