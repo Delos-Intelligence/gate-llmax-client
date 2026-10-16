@@ -911,7 +911,7 @@ class LLMClient:
 
         Args:
             prompt: Text prompt (ignored when ``start_image`` drives image-to-video).
-            aspect_ratio: ``16:9``, ``9:16``, ``1:1``, ``4:3``, ``3:4`` or ``21:9``; the model's
+            aspect_ratio: ``16:9``, ``9:16``, ``1:1``, ``4:3``, ``3:4``, ``3:2``, ``2:3``, ``21:9`` or ``9:21``; the model's
                 ``VideoLimits.aspect_ratios`` lists what it renders.
             duration_seconds: Clip length, 1 to 30 seconds; the model's ``VideoLimits.durations``
                 lists what it accepts, and ``min_duration_by_resolution`` may lengthen it.
