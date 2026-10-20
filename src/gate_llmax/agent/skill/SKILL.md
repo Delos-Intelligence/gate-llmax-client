@@ -63,6 +63,8 @@ To extend a generated clip by ~7s, pass `source_video=VideoSource(uri=resp.video
 
 Lip sync, talking avatars, video-to-video, object removal and segmentation also go through `client.video(...)`: pass `input_video` / `input_audio` / `mask_video` as `MediaInput(url=...)` (signed URLs, never base64 for long clips), `start_image` for the portrait, and `segment_points` / `segment_prompt` for segmentation. The model's `traits.video.task` and `traits.video.inputs` say what it does and takes; the clip comes back in `video` (base64) or `video_url`.
 
+Background removal goes through `client.image(images=[raw_bytes], operation=...)` with no prompt, on a model whose `traits.image.task` is `remove_background`; the cutout comes back as a PNG with its alpha channel in `data[0].b64`.
+
 ## Routing: hosting providers & plans
 
 A request can restrict *where* it runs:

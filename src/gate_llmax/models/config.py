@@ -67,6 +67,13 @@ class ImageLimits(BaseModel):
     qualities: list[str] | None = Field(
         default=None, description="Quality levels the model takes; None when it takes none or they are unknown."
     )
+    task: str | None = Field(
+        default=None,
+        description=(
+            "What the model does with its input image: `generate` (also None) or `remove_background`, which takes one image and "
+            "no prompt and returns a PNG with alpha. A str, so new values still parse."
+        ),
+    )
 
 
 class VideoLimits(BaseModel):

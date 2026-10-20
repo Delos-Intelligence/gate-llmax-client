@@ -40,10 +40,13 @@ class ImageRequest(CallControl):
     and ignored by Gemini. Provider-specific knobs (``background``,
     ``output_format``, ``output_compression``) are honored by OpenAI ``gpt-image-1``
     and ignored (with a warning) by Gemini.
+
+    A task model (``ImageLimits.task``, e.g. ``remove_background``) works on
+    ``images`` alone, so ``prompt`` may be empty.
     """
 
     model: str
-    prompt: str
+    prompt: str = ""
     images: list[str] | None = Field(
         default=None,
         description="Base64-encoded input images. When set, the call is an edit; otherwise a fresh generation.",

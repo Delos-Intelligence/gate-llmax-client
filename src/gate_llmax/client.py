@@ -1034,7 +1034,7 @@ class LLMClient:
 
     def image(
         self,
-        prompt: str,
+        prompt: str = "",
         *,
         images: list[bytes] | None = None,
         b64_images: list[str] | None = None,
@@ -1056,7 +1056,9 @@ class LLMClient:
         """Fluent builder for image generation / edit; ``.call(model)`` sends it.
 
         Pass input images as raw bytes (``images``) and/or already-encoded base64
-        (``b64_images``); supplying either switches the call to edit mode. ``cache_call`` /
+        (``b64_images``); supplying either switches the call to edit mode. ``prompt`` may be
+        empty for a task model (``ImageLimits.task``, e.g. ``remove_background``), whose PNG
+        comes back with its alpha channel in ``data[0].b64``. ``cache_call`` /
         ``cache_ttl`` / ``max_tries`` / ``timeout`` default to the client's; ``operation`` tags the usage row;
         the rest mirror ``ImageRequest``.
         """
