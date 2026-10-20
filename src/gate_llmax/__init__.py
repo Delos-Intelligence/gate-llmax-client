@@ -58,7 +58,7 @@ from gate_llmax.models.response import (
 from gate_llmax.models.responses import ResponsesRequest, ResponsesResponse
 from gate_llmax.models.speech_to_speech import SpeechToSpeechRequest, SpeechToSpeechResponse
 from gate_llmax.models.tts import TTSRequest, TTSResponse
-from gate_llmax.models.video import VideoRequest, VideoResponse, VideoSource
+from gate_llmax.models.video import MediaInput, SegmentPoint, VideoRequest, VideoResponse, VideoSource
 from gate_llmax.models.vision import VisionLine, VisionOCR, VisionOCRRequest, VisionPoint, VisionWord
 from gate_llmax.realtime_client import RealtimeConnection
 from gate_llmax.types import JsonDict, JsonValue, OutputStatus, ReasoningEffort
@@ -177,6 +177,7 @@ __all__ = [
     "LLMServerError",
     "LLMTimeoutError",
     "MediaBuilder",
+    "MediaInput",
     "Message",
     "MessageRole",
     "ModelCapabilities",
@@ -213,6 +214,7 @@ __all__ = [
     "ResolvedDeployment",
     "ResponsesRequest",
     "ResponsesResponse",
+    "SegmentPoint",
     "SpeechToSpeechRequest",
     "SpeechToSpeechResponse",
     "StreamChunk",

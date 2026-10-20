@@ -90,6 +90,18 @@ class VideoLimits(BaseModel):
     min_duration_by_resolution: dict[str, int] | None = Field(
         default=None, description="Shortest clip each resolution renders, e.g. Veo's 8 s at 1080p and 4k; shorter asks are lengthened."
     )
+    task: str | None = Field(
+        default=None,
+        description=(
+            "What the model does: `generate` (also None), `lipsync`, `avatar`, `multi_avatar`, `motion_transfer`, `replace`, "
+            "`v2v_edit`, `remove` or `segment`. A str, so new values still parse."
+        ),
+    )
+    inputs: list[str] | None = Field(
+        default=None, description="Media inputs the model takes: `video`, `audio`, `image`, `mask`, `points`, `prompt`, `references`."
+    )
+    max_input_seconds: float | None = Field(default=None, description="Longest input video or audio the model takes.")
+    speakers: int | None = Field(default=None, description="How many speakers a multi-speaker avatar model animates.")
 
 
 class ModelTraits(BaseModel):

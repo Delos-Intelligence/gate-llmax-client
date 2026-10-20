@@ -55,7 +55,16 @@ from gate_llmax.models.usage import (
     TimeseriesPoint,
     UsageSample,
 )
-from gate_llmax.models.video import VideoAspectRatio, VideoDuration, VideoRequest, VideoResolution, VideoResponse, VideoSource
+from gate_llmax.models.video import (
+    MediaInput,
+    SegmentPoint,
+    VideoAspectRatio,
+    VideoDuration,
+    VideoRequest,
+    VideoResolution,
+    VideoResponse,
+    VideoSource,
+)
 from gate_llmax.models.vision import VisionOCRRequest
 from gate_llmax.ratelimit import RateLimit, RateLimiter
 from gate_llmax.types import JsonDict, JsonValue, ReasoningEffort
@@ -891,7 +900,7 @@ class LLMClient:
 
     def video(
         self,
-        prompt: str,
+        prompt: str = "",
         *,
         aspect_ratio: VideoAspectRatio = "16:9",
         duration_seconds: VideoDuration = 6,
@@ -901,16 +910,23 @@ class LLMClient:
         start_image: str | None = None,
         end_image: str | None = None,
         source_video: VideoSource | None = None,
+        input_video: MediaInput | None = None,
+        input_audio: MediaInput | None = None,
+        speaker_audio: list[MediaInput] | None = None,
+        mask_video: MediaInput | None = None,
+        segment_points: list[SegmentPoint] | None = None,
+        segment_prompt: str | None = None,
         max_tries: int | None = None,
         timeout: int | None = None,
         operation: str,
         cache_call: bool | None = None,
         cache_ttl: int | None = None,
     ) -> VideoRequestBuilder:
-        """Fluent builder for text/image-to-video and extension; ``.call(model)`` sends it.
+        """Fluent builder for text/image-to-video, extension and media models; ``.call(model)`` sends it.
 
         Args:
-            prompt: Text prompt (ignored when ``start_image`` drives image-to-video).
+            prompt: Text prompt (ignored when ``start_image`` drives image-to-video); may be empty for media
+                models that need none (lip sync, removal, segmentation).
             aspect_ratio: ``16:9``, ``9:16``, ``1:1``, ``4:3``, ``3:4``, ``3:2``, ``2:3``, ``21:9`` or ``9:21``; the model's
                 ``VideoLimits.aspect_ratios`` lists what it renders.
             duration_seconds: Clip length, 1 to 30 seconds; the model's ``VideoLimits.durations``
@@ -924,6 +940,13 @@ class LLMClient:
             source_video: Clip to extend by ~7s at 720p, built from a previous response's
                 ``video_uri`` and ``deployment_id``; ``duration_seconds``, ``resolution`` and
                 the image inputs are then ignored.
+            input_video: Clip a media model works on (lip sync, motion transfer, edit, removal, segmentation);
+                pass anything large by ``url``.
+            input_audio: Speech for lip sync or a talking avatar.
+            speaker_audio: One speech track per speaker for a multi-speaker avatar (``VideoLimits.speakers``).
+            mask_video: Mask clip for removal, white marking what to remove.
+            segment_points: Clicks on the object to segment, normalised to 0..1.
+            segment_prompt: Text naming what to segment or remove.
             max_tries: Per-call upstream attempts; overrides the model default.
             timeout: Per-call upstream timeout in seconds; overrides the model default.
             operation: Caller-supplied usage tag, echoed onto the usage log row.
@@ -943,6 +966,12 @@ class LLMClient:
             start_image=start_image,
             end_image=end_image,
             source_video=source_video,
+            input_video=input_video,
+            input_audio=input_audio,
+            speaker_audio=speaker_audio,
+            mask_video=mask_video,
+            segment_points=segment_points,
+            segment_prompt=segment_prompt,
             max_tries=max_tries,
             timeout=timeout,
             operation=self._resolve_operation(operation),

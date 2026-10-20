@@ -61,6 +61,8 @@ Other media: `client.embed(...)`, `client.image(...)`, `client.audio("speech", .
 
 To extend a generated clip by ~7s, pass `source_video=VideoSource(uri=resp.video_uri, deployment_id=str(resp.deployment_id))` to `client.video(...)` — the handle only lives while the provider keeps the file (Gemini: 2 days).
 
+Lip sync, talking avatars, video-to-video, object removal and segmentation also go through `client.video(...)`: pass `input_video` / `input_audio` / `mask_video` as `MediaInput(url=...)` (signed URLs, never base64 for long clips), `start_image` for the portrait, and `segment_points` / `segment_prompt` for segmentation. The model's `traits.video.task` and `traits.video.inputs` say what it does and takes; the clip comes back in `video` (base64) or `video_url`.
+
 ## Routing: hosting providers & plans
 
 A request can restrict *where* it runs:
