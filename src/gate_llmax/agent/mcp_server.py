@@ -491,7 +491,11 @@ async def create_model(
         "created": True,
         "id": created.get("id"),
         "name": created.get("name"),
-        "next": f"add a deployment with create_deployment(model='{created.get('name')}', ...); a model with no route cannot serve.",
+        "next": (
+            f"add a deployment with create_deployment(model='{created.get('name')}', ...); a model with no route cannot serve. "
+            f"Then qualify it: verify_profile(model='{created.get('name')}') and apply its proposals, "
+            f"then heavy_test(model='{created.get('name')}')."
+        ),
     }
 
 

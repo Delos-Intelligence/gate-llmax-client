@@ -129,6 +129,20 @@ On a reasoning-capable model the suite sets `reasoning_effort=minimal` and lifts
 on the cases that are *not* about reasoning — otherwise the model spends the whole budget thinking
 and every case degrades to "returned nothing", which tests nothing.
 
+## Adding a model or deployment: verify, then heavy-test
+
+Whenever a model or deployment is added (dashboard, admin API, or `create_model` / `create_deployment`
+here), qualify it before calling it done:
+
+1. **`verify_profile(model)`** — probes what each endpoint really accepts (images, tools, reasoning
+   efforts, JSON, sampling knobs, system turns mid-conversation, …) against the catalog. Apply its
+   `proposals` from the dashboard's Verify page; `code_findings` need a Gate patch, so report them.
+2. **`heavy_test(model)`** — the full capability-matched suite (default `n=5`), or pinned with
+   `deployment=` for a new deployment. Read the failing runs, not just the pass rate.
+
+Re-run `verify_profile` after applying proposals until it proposes nothing, and say plainly which
+features stayed restricted and why.
+
 ## Gotchas
 
 - `operation=` is mandatory. `prompt=` and `messages=` are mutually exclusive.
