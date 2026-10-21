@@ -140,6 +140,9 @@ class ModelTraits(BaseModel):
     )
     wire: Literal["claude", "nova", "openai"] | None = Field(default=None, description="The body dialect a Bedrock deployment speaks.")
     no_system_role: bool = Field(default=False, description="The chat template has no system role; the system prompt is dropped.")
+    mid_conversation_system: bool = Field(
+        default=False, description="Takes `system` turns mid-conversation; otherwise Gate folds them into the system prompt."
+    )
     stt_dialect: Literal["whisper"] | None = Field(default=None, description="Transcription formats the model honours (verbose_json).")
     force_diarize: bool = Field(default=False, description="Labels speakers whether or not the caller asked.")
     default_voice: str | None = Field(default=None, description="The voice a text-to-speech call uses when the caller names none.")
