@@ -645,7 +645,13 @@ class LLMClient:
         host = self._base_url.split("://", 1)[-1]
         query = urlencode({k: v for k, v in {"model": model, "session_id": session_id}.items() if v})
         ws_url = f"{scheme}://{host}/v1/realtime/{endpoint}?{query}"
-        return RealtimeConnection(ws_url, self._api_key, session_config, output_sample_rate=session_config.output_sample_rate)
+        return RealtimeConnection(
+            ws_url,
+            self._api_key,
+            session_config,
+            output_sample_rate=session_config.output_sample_rate,
+            usage_callbacks=list(self._usage_callbacks),
+        )
 
     def transcribe(
         self,

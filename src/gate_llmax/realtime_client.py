@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
 import json
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, Self
@@ -18,8 +20,14 @@ from .models.realtime import (
 if TYPE_CHECKING:
     from websockets.asyncio.client import ClientConnection
 
+    from .models.response import RawUsage
+    from .request import UsageCallback
+
 # The three realtime surfaces, keyed by their session purpose shorthand.
 PURPOSE_ENDPOINT = {"converse": "converse", "transcribe": "transcribe", "speak": "speak"}
+
+# How long a closing client waits for Gate's billed session usage.
+CLOSE_USAGE_WAIT_S = 3.0
 
 
 class RealtimeConnectionError(Exception):
@@ -29,14 +37,25 @@ class RealtimeConnectionError(Exception):
 class RealtimeConnection:
     """One live-voice session: push audio/video in, iterate ``RealtimeEvent``s out."""
 
-    def __init__(self, ws_url: str, api_key: str, config: RealtimeSessionConfig, *, output_sample_rate: int) -> None:
+    def __init__(
+        self,
+        ws_url: str,
+        api_key: str,
+        config: RealtimeSessionConfig,
+        *,
+        output_sample_rate: int,
+        usage_callbacks: list[UsageCallback] | None = None,
+    ) -> None:
         """Bind the resolved ws URL, auth key and session config; the socket opens in ``__aenter__``."""
         self._ws_url = ws_url
         self._api_key = api_key
         self._config = config
         self._output_sample_rate = output_sample_rate
         self._ws: ClientConnection | None = None
+        self._usage_callbacks = list(usage_callbacks or [])
+        self._reading = False
         self.capabilities = RealtimeCapabilities()
+        self.usage: RawUsage | None = None
 
     async def __aenter__(self) -> Self:
         """Open the socket, read the capabilities handshake, and send the session config."""
@@ -110,10 +129,28 @@ class RealtimeConnection:
         await self._send({"type": "end_input"})
 
     async def aclose(self) -> None:
-        """Close the socket."""
-        if self._ws is not None:
-            ws, self._ws = self._ws, None
+        """Close the socket, first asking Gate for the session's billed usage when it sends one."""
+        if self._ws is None:
+            return
+        if self.usage is None and self.capabilities.session_usage and not self._reading:
+            with contextlib.suppress(Exception):
+                await self._send({"type": "close"})
+                await asyncio.wait_for(self._await_usage(), CLOSE_USAGE_WAIT_S)
+        ws, self._ws = self._ws, None
+        if ws is not None:
             await ws.close()
+
+    async def _await_usage(self) -> None:
+        while self.usage is None and self._ws is not None:
+            await self.__anext__()
+
+    async def _on_usage(self, usage: RawUsage) -> None:
+        """Record Gate's billed session usage and fire the client's usage callbacks, once."""
+        if self.usage is not None:
+            return
+        self.usage = usage
+        for cb in self._usage_callbacks:
+            await cb(usage)
 
     def __aiter__(self) -> AsyncIterator[RealtimeEvent]:
         """Iterate the server's ``RealtimeEvent`` stream."""
@@ -125,11 +162,17 @@ class RealtimeConnection:
             raise StopAsyncIteration
         from websockets.exceptions import ConnectionClosed
 
+        self._reading = True
         try:
             message = await self._ws.recv()
         except ConnectionClosed:
             raise StopAsyncIteration from None
+        finally:
+            self._reading = False
         if isinstance(message, bytes):
             data = base64.b64encode(message).decode()
             return RealtimeEvent(type=RealtimeEventType.AUDIO, audio=RealtimeAudioData(data=data, sample_rate=self._output_sample_rate))
-        return RealtimeEvent.model_validate_json(message)
+        event = RealtimeEvent.model_validate_json(message)
+        if event.type is RealtimeEventType.SESSION_USAGE and event.session_usage is not None:
+            await self._on_usage(event.session_usage)
+        return event

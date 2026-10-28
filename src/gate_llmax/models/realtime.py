@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from .request import CallControl
-from .response import LLMCallRecord
+from .response import LLMCallRecord, RawUsage
 
 
 class RealtimeSessionConfig(CallControl):
@@ -45,6 +45,7 @@ class RealtimeCapabilities(BaseModel):
     tool_update: bool = False
     system_message: bool = False
     async_tools: bool = False
+    session_usage: bool = False
 
 
 @unique
@@ -64,6 +65,7 @@ class RealtimeEventType(StrEnum):
     VOICE_ACTIVITY = "voice_activity"
     GO_AWAY = "go_away"
     USAGE_METADATA = "usage_metadata"
+    SESSION_USAGE = "session_usage"
 
 
 class RealtimeAudioData(BaseModel):
@@ -173,6 +175,7 @@ class RealtimeEvent(BaseModel):
     voice_activity: RealtimeVoiceActivityData | None = None
     go_away: RealtimeGoAwayData | None = None
     usage_metadata: RealtimeUsageMetadataData | None = None
+    session_usage: RawUsage | None = None
 
 
 class RealtimeRecord(LLMCallRecord):
