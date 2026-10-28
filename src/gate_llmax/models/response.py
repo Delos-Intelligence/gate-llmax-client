@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Any, Literal
 from uuid import UUID
 
@@ -31,6 +32,23 @@ class ToolCall(BaseModel):
     def from_openai(cls, tool_call: Any) -> ToolCall:
         """Build from an OpenAI-shaped tool call (a dict or any object with the same fields)."""
         return cls.model_validate(tool_call, from_attributes=True)
+
+
+class ReasoningFormat(StrEnum):
+    """The wire a reasoning block's opaque data came from; only that wire reads it back."""
+
+    ANTHROPIC = "anthropic"
+    OPENAI = "openai"
+
+
+class ReasoningBlock(BaseModel):
+    """One reasoning block in output order, with the opaque data its wire expects back verbatim."""
+
+    format: ReasoningFormat
+    text: str = ""
+    signature: str = Field(default="", description="Anthropic thinking signature.")
+    data: str = Field(default="", description="Anthropic redacted thinking, or OpenAI encrypted reasoning.")
+    id: str = Field(default="", description="OpenAI reasoning item id.")
 
 
 # Cost decimals. Matches the scale of Gate's usage_logs.cost / usage_rollup.cost
@@ -107,6 +125,7 @@ class StreamChunkDelta(BaseModel):
     # both are read on the way in, and `reasoning` is the one spelling written on the way out.
     reasoning: str | None = None
     reasoning_signature: str | None = None
+    reasoning_block: ReasoningBlock | None = None
     tool_calls: list[JsonDict] | None = None
 
 
@@ -131,6 +150,7 @@ class StreamChunk(BaseModel):
     text: str = ""
     reasoning: str = ""
     reasoning_signature: str = ""  # opaque signature for the thinking block just streamed; replayed to validate it next turn
+    reasoning_block: ReasoningBlock | None = Field(default=None, description="A reasoning block that just finished, whole.")
     is_done: bool = False
     finish_reason: str | None = None
     native_finish_reason: str | None = None  # the provider's own reason before OpenAI-vocab flattening; None until a terminal chunk
@@ -164,6 +184,7 @@ class StreamChunk(BaseModel):
                     content=self.text or None,
                     reasoning=self.reasoning or None,
                     reasoning_signature=self.reasoning_signature or None,
+                    reasoning_block=self.reasoning_block,
                     tool_calls=self.tool_calls_delta,
                 ),
                 finish_reason=self.finish_reason,
@@ -399,6 +420,7 @@ class LLMResponse(LLMCallRecord):
     raw_text: str = ""
     reasoning: str = Field(default="", description="Assistant reasoning/thinking text (empty string when none).")
     reasoning_signature: str = Field(default="", description="Opaque signature for the thinking block, replayed to validate it next turn.")
+    reasoning_blocks: list[ReasoningBlock] | None = Field(default=None, description="Every reasoning block in output order.")
     tool_calls: list[ToolCall] | None = None
     json_object: JsonDict | None = None
     choices: list[str] | None = Field(
@@ -423,6 +445,8 @@ class LLMResponse(LLMCallRecord):
             message["reasoning"] = self.reasoning
         if self.reasoning_signature:
             message["reasoning_signature"] = self.reasoning_signature
+        if self.reasoning_blocks:
+            message["reasoning_blocks"] = [block.model_dump() for block in self.reasoning_blocks]
         if self.tool_calls:
             message["tool_calls"] = [tc.model_dump() for tc in self.tool_calls]
         return {

@@ -221,6 +221,10 @@ class LLMRequest(CallControl):
         ),
     )
     messages: list[Message] = Field(default_factory=list)
+    strict_reasoning_replay: bool = Field(
+        default=False,
+        description="Fail when the provider rejects replayed reasoning, instead of retrying once without it; for evals.",
+    )
     tools: list[JsonDict] | None = Field(
         default=None,
         description=(
