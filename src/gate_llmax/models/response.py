@@ -49,6 +49,7 @@ class ReasoningBlock(BaseModel):
     signature: str = Field(default="", description="Anthropic thinking signature.")
     data: str = Field(default="", description="Anthropic redacted thinking, or OpenAI encrypted reasoning.")
     id: str = Field(default="", description="OpenAI reasoning item id.")
+    model: str = Field(default="", description="The Gate model that wrote it; Gate replays it only to models that can read it.")
 
 
 class CompactionFormat(StrEnum):
