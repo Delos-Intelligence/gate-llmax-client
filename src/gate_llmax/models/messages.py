@@ -88,6 +88,22 @@ class VideoMessage(BaseModel):
 type ContentBlock = TextMessage | ImageMessage | AudioMessage | VideoMessage
 
 
+class ToolChangeAction(StrEnum):
+    """Whether a tool joins or leaves the conversation."""
+
+    ADD = "add"
+    REMOVE = "remove"
+
+
+class ToolChange(BaseModel):
+    """One tool, named as in ``LLMRequest.tools``, added to or removed from the model's tool set from this turn on."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: ToolChangeAction
+    name: str
+
+
 class Message(BaseModel):
     """A single turn in a conversation."""
 
@@ -104,6 +120,9 @@ class Message(BaseModel):
     reasoning_blocks: list[ReasoningBlock] | None = Field(
         default=None, description="An assistant turn's reasoning blocks in output order; supersedes reasoning/reasoning_signature."
     )
+    tool_changes: list[ToolChange] | None = Field(
+        default=None, description="On a system turn: tools added or removed here; ``LLMRequest.tools`` then lists every tool ever offered."
+    )
 
     @classmethod
     def user(cls, content: str) -> Message:
@@ -119,6 +138,13 @@ class Message(BaseModel):
     def system(cls, content: str) -> Message:
         """Create a system message."""
         return cls(role=MessageRole.SYSTEM, content=[TextMessage(text=content)])
+
+    @classmethod
+    def tools_changed(cls, added: list[str] | None = None, removed: list[str] | None = None) -> Message:
+        """Create a system turn adding and removing tools by name, keeping the cached prefix where the model allows it."""
+        changes = [ToolChange(action=ToolChangeAction.ADD, name=n) for n in added or []]
+        changes += [ToolChange(action=ToolChangeAction.REMOVE, name=n) for n in removed or []]
+        return cls(role=MessageRole.SYSTEM, tool_changes=changes)
 
     @classmethod
     def assistant_tool_calls(cls, tool_calls: list[ToolCall], content: str = "") -> Message:
@@ -151,18 +177,23 @@ class Message(BaseModel):
             tool_calls, tool_call_id, name = message.get("tool_calls"), message.get("tool_call_id"), message.get("name")
             reasoning, reasoning_signature = message.get("reasoning"), message.get("reasoning_signature")
             reasoning_blocks = message.get("reasoning_blocks")
+            tool_changes = message.get("tool_changes")
         else:
             role, content = getattr(message, "role", None), getattr(message, "content", None)
             tool_calls = getattr(message, "tool_calls", None)
             tool_call_id, name = getattr(message, "tool_call_id", None), getattr(message, "name", None)
             reasoning, reasoning_signature = getattr(message, "reasoning", None), getattr(message, "reasoning_signature", None)
             reasoning_blocks = getattr(message, "reasoning_blocks", None)
+            tool_changes = getattr(message, "tool_changes", None)
 
         blocks = _content_blocks(content)
         text = "\n".join(b.text for b in blocks if isinstance(b, TextMessage))
 
         if role == "system":
-            return cls.system(text)
+            msg = cls.system(text)
+            if tool_changes:
+                msg.tool_changes = [ToolChange.model_validate(c, from_attributes=True) for c in tool_changes]
+            return msg
         if role == "assistant":
             if tool_calls:
                 msg = cls.assistant_tool_calls([ToolCall.from_openai(tc) for tc in tool_calls], text)
@@ -281,6 +312,8 @@ def message_to_openai_dict(msg: Message) -> JsonDict:
         payload["reasoning_signature"] = msg.reasoning_signature
     if msg.reasoning_blocks is not None:
         payload["reasoning_blocks"] = [block.model_dump() for block in msg.reasoning_blocks]
+    if msg.tool_changes is not None:
+        payload["tool_changes"] = [change.model_dump(mode="json") for change in msg.tool_changes]
     if msg.tool_call_id is not None:
         payload["tool_call_id"] = msg.tool_call_id
     if msg.name is not None:
