@@ -15,8 +15,11 @@ from gate_llmax.models.images import ImageData, ImageRequest, ImageResponse
 from gate_llmax.models.messages import ImageMessage, Message, TextMessage
 from gate_llmax.models.request import (
     BestTarget,
+    CompactionPolicy,
+    ContextEdits,
     FallbackTarget,
     LLMRequest,
+    OnDemandCompaction,
     ParallelTarget,
     RequestSpecifics,
     SingleTarget,
@@ -355,6 +358,9 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
     deployment_id: str | None = None
     no_fallback: bool = False
     fallback_on_content_policy: bool = False
+    context_edits: ContextEdits | None = None
+    compaction: CompactionPolicy | None = None
+    compact_now: OnDemandCompaction | None = None
     operation: str = ""
     seed_routing: str | None = None
     # When set, every streamed call this builder makes (including each tool-loop turn) sends a
@@ -427,6 +433,25 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         """On a provider content-policy block, advance to the next fallback model rather than return the block."""
         self.fallback_on_content_policy = on
         return self
+
+    def with_context_edits(self, edits: ContextEdits) -> Self:
+        """Clear old tool results and reasoning once the prompt grows past the edit's trigger."""
+        self.context_edits = edits
+        return self
+
+    def with_compaction(self, policy: CompactionPolicy) -> Self:
+        """Summarize the history once the prompt passes the policy's trigger; the reply then carries the ``Compaction``."""
+        self.compaction = policy
+        return self
+
+    def compact(self, instructions: str | None = None) -> Self:
+        """Ask for a summary of the history instead of a reply; open the next history with ``Message.compacted(response.compaction)``."""
+        self.compact_now = OnDemandCompaction(instructions=instructions)
+        return self
+
+    def _conversation_controls(self) -> dict[str, Any]:
+        """The context edits and compaction every request this builder sends carries."""
+        return {"context_edits": self.context_edits, "compaction": self.compaction, "compact": self.compact_now}
 
     def with_tools(
         self,
@@ -738,6 +763,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             no_fallback=self.no_fallback,
             fallback_on_content_policy=self.fallback_on_content_policy,
             seed_routing=self.seed_routing,
+            **self._conversation_controls(),
         )
         estimated_input: int | None = None
         async for frame in self.client._stream_batch(request):  # noqa: SLF001
@@ -792,6 +818,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             no_fallback=self.no_fallback,
             fallback_on_content_policy=self.fallback_on_content_policy,
             seed_routing=self.seed_routing,
+            **self._conversation_controls(),
         )
         responses = await self.client._send_batch(batch)  # noqa: SLF001
         for response in responses:
@@ -891,6 +918,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             no_fallback=self.no_fallback,
             fallback_on_content_policy=self.fallback_on_content_policy,
             seed_routing=self.seed_routing,
+            **self._conversation_controls(),
         )
         response = await self.client._send(request)  # noqa: SLF001
         self._apply_cast_json(response)
@@ -1144,6 +1172,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             no_fallback=self.no_fallback,
             fallback_on_content_policy=self.fallback_on_content_policy,
             seed_routing=self.seed_routing,
+            **self._conversation_controls(),
             cache_call=self.cache_call,
             cache_ttl=self.cache_ttl,
             smooth=smooth_server_side,

@@ -162,6 +162,14 @@ class CompactionPolicy(BaseModel):
     pause_after: bool = Field(default=False, description="Return the summary alone, without answering, so turns can be re-inserted.")
 
 
+class OnDemandCompaction(BaseModel):
+    """Summarize the whole history now, in place of a reply; the response carries the ``Compaction`` to open the next history with."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    instructions: str | None = Field(default=None, description="Summarization prompt replacing the default one whole.")
+
+
 class ResolveRequest(BaseModel):
     """Ask the gateway what a chat call to ``model`` would route to, without calling it."""
 
@@ -254,6 +262,7 @@ class LLMRequest(CallControl):
     )
     context_edits: ContextEdits | None = Field(default=None, description="Clear old tool results and reasoning past a size.")
     compaction: CompactionPolicy | None = Field(default=None, description="Summarize the history past a size, where the model can.")
+    compact: OnDemandCompaction | None = Field(default=None, description="Return a summary of the history instead of a reply.")
     tools: list[JsonDict] | None = Field(
         default=None,
         description=(
