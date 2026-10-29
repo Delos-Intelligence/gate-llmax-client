@@ -143,6 +143,9 @@ class ModelTraits(BaseModel):
     mid_conversation_system: bool = Field(
         default=False, description="Takes `system` turns mid-conversation; otherwise Gate folds them into the system prompt."
     )
+    context_management: bool = Field(
+        default=False, description="Claude that edits and compacts its context server-side; otherwise Gate does it on the history."
+    )
     stt_dialect: Literal["whisper"] | None = Field(default=None, description="Transcription formats the model honours (verbose_json).")
     force_diarize: bool = Field(default=False, description="Labels speakers whether or not the caller asked.")
     default_voice: str | None = Field(default=None, description="The voice a text-to-speech call uses when the caller names none.")

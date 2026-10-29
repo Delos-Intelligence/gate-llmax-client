@@ -52,7 +52,7 @@ from gate_llmax.models.realtime import (
     RealtimeTranscriptData,
     RealtimeUsageMetadataData,
 )
-from gate_llmax.models.request import BestTarget, CallControl, RequestSpecifics, ResolveRequest, ZoneSelection
+from gate_llmax.models.request import BestTarget, CallControl, ContextEdits, RequestSpecifics, ResolveRequest, ZoneSelection
 from gate_llmax.models.response import (
     BaseAudioResponse,
     ContentFilter,
@@ -144,6 +144,7 @@ __all__ = [
     "CallControl",
     "ContentBlock",
     "ContentFilter",
+    "ContextEdits",
     "DecisionAnswer",
     "DecisionQuestion",
     "DecisionRequest",

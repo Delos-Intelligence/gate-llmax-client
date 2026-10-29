@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..types import JsonDict, ReasoningEffort
 from .messages import Message
@@ -135,6 +135,23 @@ class RequestSpecifics(BaseModel):
     )
 
 
+class ContextEdits(BaseModel):
+    """Prune old tool results and reasoning from what the model sees; Claude does it server-side, Gate replays the same rule elsewhere."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    clear_tool_results_at: int | None = Field(
+        default=None, description="Input tokens past which older tool results are cleared; None never clears them."
+    )
+    keep_tool_results: int = Field(default=3, ge=0, description="Most recent tool results kept whole.")
+    clear_at_least: int | None = Field(default=None, description="Skip clearing unless it frees at least this many input tokens.")
+    exclude_tools: list[str] | None = Field(default=None, description="Tools whose results are never cleared.")
+    clear_tool_inputs: bool = Field(default=False, description="Also clear the arguments of the calls whose results are cleared.")
+    keep_reasoning_turns: int | None = Field(
+        default=None, gt=0, description="Keep reasoning only on the last N assistant turns that have some; None keeps all of it."
+    )
+
+
 class ResolveRequest(BaseModel):
     """Ask the gateway what a chat call to ``model`` would route to, without calling it."""
 
@@ -225,6 +242,7 @@ class LLMRequest(CallControl):
         default=False,
         description="Fail when the provider rejects replayed reasoning, instead of retrying once without it; for evals.",
     )
+    context_edits: ContextEdits | None = Field(default=None, description="Clear old tool results and reasoning past a size.")
     tools: list[JsonDict] | None = Field(
         default=None,
         description=(
