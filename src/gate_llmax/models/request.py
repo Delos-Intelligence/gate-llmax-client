@@ -152,6 +152,16 @@ class ContextEdits(BaseModel):
     )
 
 
+class CompactionPolicy(BaseModel):
+    """Summarize the history once the prompt passes a size; Claude does it server-side and returns a ``Compaction`` to replay."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    trigger_tokens: int = Field(default=150_000, ge=50_000, description="Input tokens past which the history is summarized.")
+    instructions: str | None = Field(default=None, description="Summarization prompt replacing the default one whole.")
+    pause_after: bool = Field(default=False, description="Return the summary alone, without answering, so turns can be re-inserted.")
+
+
 class ResolveRequest(BaseModel):
     """Ask the gateway what a chat call to ``model`` would route to, without calling it."""
 
@@ -243,6 +253,7 @@ class LLMRequest(CallControl):
         description="Fail when the provider rejects replayed reasoning, instead of retrying once without it; for evals.",
     )
     context_edits: ContextEdits | None = Field(default=None, description="Clear old tool results and reasoning past a size.")
+    compaction: CompactionPolicy | None = Field(default=None, description="Summarize the history past a size, where the model can.")
     tools: list[JsonDict] | None = Field(
         default=None,
         description=(

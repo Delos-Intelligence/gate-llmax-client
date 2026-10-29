@@ -51,6 +51,21 @@ class ReasoningBlock(BaseModel):
     id: str = Field(default="", description="OpenAI reasoning item id.")
 
 
+class CompactionFormat(StrEnum):
+    """Who wrote a compaction summary: Claude's server, replayed as its own block, or anyone else, replayed as text."""
+
+    ANTHROPIC = "anthropic"
+    TEXT = "text"
+
+
+class Compaction(BaseModel):
+    """A summary standing in for every turn before it; send it back exactly as received."""
+
+    format: CompactionFormat
+    text: str
+    signature: str = Field(default="", description="Signature of an on-demand Claude summary, empty for a threshold one.")
+
+
 # Cost decimals. Matches the scale of Gate's usage_logs.cost / usage_rollup.cost
 # columns (numeric(_, 10)) — anything finer is truncated by the database anyway.
 # Rounding shallower than this silently drops whole calls: at 5 decimals every
@@ -151,6 +166,7 @@ class StreamChunk(BaseModel):
     reasoning: str = ""
     reasoning_signature: str = ""  # opaque signature for the thinking block just streamed; replayed to validate it next turn
     reasoning_block: ReasoningBlock | None = Field(default=None, description="A reasoning block that just finished, whole.")
+    compaction: Compaction | None = Field(default=None, description="A compaction summary the model just wrote, whole.")
     is_done: bool = False
     finish_reason: str | None = None
     native_finish_reason: str | None = None  # the provider's own reason before OpenAI-vocab flattening; None until a terminal chunk
@@ -421,6 +437,9 @@ class LLMResponse(LLMCallRecord):
     reasoning: str = Field(default="", description="Assistant reasoning/thinking text (empty string when none).")
     reasoning_signature: str = Field(default="", description="Opaque signature for the thinking block, replayed to validate it next turn.")
     reasoning_blocks: list[ReasoningBlock] | None = Field(default=None, description="Every reasoning block in output order.")
+    compaction: Compaction | None = Field(
+        default=None, description="Summary of the turns before this reply; replay it on this turn's assistant message."
+    )
     tool_calls: list[ToolCall] | None = None
     json_object: JsonDict | None = None
     choices: list[str] | None = Field(
@@ -447,6 +466,8 @@ class LLMResponse(LLMCallRecord):
             message["reasoning_signature"] = self.reasoning_signature
         if self.reasoning_blocks:
             message["reasoning_blocks"] = [block.model_dump() for block in self.reasoning_blocks]
+        if self.compaction:
+            message["compaction"] = self.compaction.model_dump()
         if self.tool_calls:
             message["tool_calls"] = [tc.model_dump() for tc in self.tool_calls]
         return {

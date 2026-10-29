@@ -52,9 +52,19 @@ from gate_llmax.models.realtime import (
     RealtimeTranscriptData,
     RealtimeUsageMetadataData,
 )
-from gate_llmax.models.request import BestTarget, CallControl, ContextEdits, RequestSpecifics, ResolveRequest, ZoneSelection
+from gate_llmax.models.request import (
+    BestTarget,
+    CallControl,
+    CompactionPolicy,
+    ContextEdits,
+    RequestSpecifics,
+    ResolveRequest,
+    ZoneSelection,
+)
 from gate_llmax.models.response import (
     BaseAudioResponse,
+    Compaction,
+    CompactionFormat,
     ContentFilter,
     LLMCallRecord,
     LLMResponse,
@@ -142,6 +152,9 @@ __all__ = [
     "ByokDialect",
     "ByokPlan",
     "CallControl",
+    "Compaction",
+    "CompactionFormat",
+    "CompactionPolicy",
     "ContentBlock",
     "ContentFilter",
     "ContextEdits",

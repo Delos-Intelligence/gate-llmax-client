@@ -9,7 +9,7 @@ from typing import Any, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..types import JsonDict
-from .response import ReasoningBlock, ToolCall
+from .response import Compaction, ReasoningBlock, ToolCall
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +123,14 @@ class Message(BaseModel):
     tool_changes: list[ToolChange] | None = Field(
         default=None, description="On a system turn: tools added or removed here; ``LLMRequest.tools`` then lists every tool ever offered."
     )
+    compaction: Compaction | None = Field(
+        default=None, description="On an assistant turn: a summary replacing every turn before it, which Gate then leaves out."
+    )
+
+    @classmethod
+    def compacted(cls, compaction: Compaction) -> Message:
+        """Create the assistant turn that opens a history with a compaction summary."""
+        return cls(role=MessageRole.ASSISTANT, compaction=compaction)
 
     @classmethod
     def user(cls, content: str) -> Message:
@@ -177,14 +185,14 @@ class Message(BaseModel):
             tool_calls, tool_call_id, name = message.get("tool_calls"), message.get("tool_call_id"), message.get("name")
             reasoning, reasoning_signature = message.get("reasoning"), message.get("reasoning_signature")
             reasoning_blocks = message.get("reasoning_blocks")
-            tool_changes = message.get("tool_changes")
+            tool_changes, compaction = message.get("tool_changes"), message.get("compaction")
         else:
             role, content = getattr(message, "role", None), getattr(message, "content", None)
             tool_calls = getattr(message, "tool_calls", None)
             tool_call_id, name = getattr(message, "tool_call_id", None), getattr(message, "name", None)
             reasoning, reasoning_signature = getattr(message, "reasoning", None), getattr(message, "reasoning_signature", None)
             reasoning_blocks = getattr(message, "reasoning_blocks", None)
-            tool_changes = getattr(message, "tool_changes", None)
+            tool_changes, compaction = getattr(message, "tool_changes", None), getattr(message, "compaction", None)
 
         blocks = _content_blocks(content)
         text = "\n".join(b.text for b in blocks if isinstance(b, TextMessage))
@@ -202,6 +210,8 @@ class Message(BaseModel):
             msg.reasoning, msg.reasoning_signature = reasoning, reasoning_signature
             if reasoning_blocks is not None:
                 msg.reasoning_blocks = [ReasoningBlock.model_validate(b, from_attributes=True) for b in reasoning_blocks]
+            if compaction is not None:
+                msg.compaction = Compaction.model_validate(compaction, from_attributes=True)
             return msg
         if role == "tool":
             # Tool results may carry images (e.g. a screenshot/read_image tool) — keep blocks.
@@ -312,6 +322,8 @@ def message_to_openai_dict(msg: Message) -> JsonDict:
         payload["reasoning_signature"] = msg.reasoning_signature
     if msg.reasoning_blocks is not None:
         payload["reasoning_blocks"] = [block.model_dump() for block in msg.reasoning_blocks]
+    if msg.compaction is not None:
+        payload["compaction"] = msg.compaction.model_dump()
     if msg.tool_changes is not None:
         payload["tool_changes"] = [change.model_dump(mode="json") for change in msg.tool_changes]
     if msg.tool_call_id is not None:
