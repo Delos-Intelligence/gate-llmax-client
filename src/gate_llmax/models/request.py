@@ -125,6 +125,10 @@ class RequestSpecifics(BaseModel):
             "leave unset for short prompts (it adds routing constraint with nothing to cache)."
         ),
     )
+    prompt_cache_ttl: Literal["5m", "1h"] | None = Field(
+        default=None,
+        description="Lifetime of the Claude prompt-cache breakpoints; ``None`` keeps the provider default (5m). Others ignore it.",
+    )
     extra_body: JsonDict | None = Field(
         default=None,
         description=(
