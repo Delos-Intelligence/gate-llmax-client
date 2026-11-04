@@ -75,6 +75,7 @@ from .exceptions import (
     LLMConnectionError,
     LLMContentFilterError,
     LLMContextOverflowError,
+    LLMError,
     LLMEscapeHatchWarning,
     LLMModelNotFoundError,
     LLMServerError,
@@ -1971,6 +1972,8 @@ def _raise_for_status(response: httpx.Response) -> None:
         raise LLMContextOverflowError(_extract_detail(response.text))
     if code == 422:
         raise LLMCapabilityError(_extract_detail(response.text))
+    if code == 409:
+        raise LLMError(_extract_detail(response.text))
     if code >= 500:
         raise LLMServerError(f"Gateway server error {code}: {_extract_detail(response.text)}")
     if code >= 400:
