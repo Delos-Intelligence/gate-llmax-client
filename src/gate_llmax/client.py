@@ -1219,16 +1219,25 @@ class LLMClient:
         model: str,
         *,
         only: list[str] | None = None,
+        deployment: str | None = None,
         every_replica: bool = False,
         include_parked: bool = False,
     ) -> JsonDict:
-        """POST /v1/verify/chat/{model} — what each endpoint really accepts, against what the catalog claims.
+        """POST /v1/verify/runs (wait=true) — what each endpoint really accepts, against what the catalog claims.
 
-        Requires a ``dev`` API key (403 otherwise). Every probe is one live completion, so this spends money.
+        The run is recorded on the gateway; a passing one is what lets the deployment (or model) be activated.
+        Requires a ``dev`` API key (403 otherwise). Every probe is one live call, so this spends money.
         """
-        payload = {"only": only or [], "every_replica": every_replica, "include_parked": include_parked}
+        payload = {
+            "model": model,
+            "only": only or [],
+            "deployment_id": deployment,
+            "every_replica": every_replica,
+            "include_parked": include_parked,
+            "wait": True,
+        }
         try:
-            response = await self._http.post(f"/v1/verify/chat/{model}", json=payload, timeout=VERIFY_CLIENT_TIMEOUT)
+            response = await self._http.post("/v1/verify/runs", json=payload, timeout=VERIFY_CLIENT_TIMEOUT)
         except httpx.TimeoutException as exc:
             raise LLMTimeoutError(f"Verification of {model!r} timed out: {exc}") from exc
         except httpx.ConnectError as exc:
@@ -1236,9 +1245,9 @@ class LLMClient:
         _raise_for_status(response)
         return response.json()
 
-    async def verify_probes(self) -> list[JsonDict]:
-        """GET /v1/verify/probes — the probe catalogue a verification runs. Requires a ``dev`` API key."""
-        response = await self._http.get("/v1/verify/probes")
+    async def verify_probes(self, *, purpose: str = "chat", model: str | None = None) -> list[JsonDict]:
+        """GET /v1/verify/probes — the suite a verification runs, for a purpose or one model. Requires a ``dev`` API key."""
+        response = await self._http.get("/v1/verify/probes", params={"purpose": purpose, **({"model": model} if model else {})})
         _raise_for_status(response)
         return response.json()
 

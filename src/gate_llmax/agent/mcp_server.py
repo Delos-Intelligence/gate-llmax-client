@@ -492,9 +492,9 @@ async def create_model(
         "id": created.get("id"),
         "name": created.get("name"),
         "next": (
-            f"add a deployment with create_deployment(model='{created.get('name')}', ...); a model with no route cannot serve. "
-            f"Then qualify it: verify_profile(model='{created.get('name')}') and apply its proposals, "
-            f"then heavy_test(model='{created.get('name')}')."
+            f"the model is INACTIVE (hidden) until verified. Add a deployment with create_deployment(model='{created.get('name')}', ...), "
+            f"run verify_profile(model='{created.get('name')}') and apply its proposals until a run passes, "
+            f"then update_model(model='{created.get('name')}', status='ACTIVE') and heavy_test(model='{created.get('name')}')."
         ),
     }
 
@@ -511,13 +511,13 @@ async def create_deployment(
     priority: int = 1,
     ktpm: int | None = None,
     max_output_tokens: int | None = None,
-    status: str = "ACTIVE",
+    status: str = "INACTIVE",
 ) -> dict[str, Any]:
     """Mutates the catalog. Point one route at a model on one account. Needs an admin key.
 
-    After creating, qualify it before it carries real traffic — the returned ``next_steps`` name the two:
-    ``verify_profile`` (do the catalog's capability claims hold on this endpoint?) and ``heavy_test`` with
-    ``deployment=<id>`` (does it hold under load?). Both reach the new endpoint even while it is INACTIVE.
+    A new deployment is INACTIVE until a verification run passes on it: run ``verify_profile`` with
+    ``deployment=<id>``, apply its proposals, re-run until it passes, then ``update_deployment(status="ACTIVE")``.
+    ``heavy_test`` with ``deployment=<id>`` qualifies it under load; both reach the endpoint while INACTIVE.
 
     Args:
         model: the model this route serves (name or alias).
@@ -530,7 +530,7 @@ async def create_deployment(
         priority: rotation priority bucket (>=1).
         ktpm: thousands of tokens/min — the rotation weight within the bucket.
         max_output_tokens: output ceiling this endpoint accepts; null inherits the model's.
-        status: initial health (ACTIVE by default; INACTIVE to stage it out of rotation until qualified).
+        status: initial status; the gateway keeps a new row INACTIVE until a verification run passes.
     """
     try:
         async with _client() as client:
@@ -568,11 +568,14 @@ async def update_deployment(
     input_token_price: float | None = None,
     output_token_price: float | None = None,
     input_cache_price: float | None = None,
+    *,
+    force: bool = False,
 ) -> dict[str, Any]:
     """Mutates the catalog. Change a deployment's priority, ktpm, output ceiling, prices or status. Needs an admin key.
 
     Only the arguments you pass are changed. The id comes from ``create_deployment``'s result or the dashboard.
-    Prices are USD per 1M tokens and override the model's for this one endpoint.
+    Prices are USD per 1M tokens and override the model's for this one endpoint. ``status="ACTIVE"`` is refused
+    (409) until a ``verify_profile`` run passes on this deployment; ``force=True`` activates it regardless.
 
     Args:
         deployment_id: the deployment's uuid.
@@ -583,6 +586,7 @@ async def update_deployment(
         input_token_price: USD/1M input tokens override for this endpoint.
         output_token_price: USD/1M output tokens override for this endpoint.
         input_cache_price: USD/1M cached input tokens override for this endpoint.
+        force: activate without a passing verification run (say why in the conversation).
     """
     pairs = (
         ("priority", priority),
@@ -592,6 +596,7 @@ async def update_deployment(
         ("input_token_price", input_token_price),
         ("output_token_price", output_token_price),
         ("input_cache_price", input_cache_price),
+        ("force", force or None),
     )
     changes: dict[str, Any] = {k: v for k, v in pairs if v is not None}
     if not changes:
@@ -616,11 +621,15 @@ async def update_model(
     default_reasoning_effort: str | None = None,
     supports_prompt_cache_key: bool | None = None,
     extra_attributes: dict[str, Any] | None = None,
+    *,
+    force: bool = False,
 ) -> dict[str, Any]:
     """Mutates the catalog. Adjust a model's prices, cost tier, lifecycle status, reasoning ladder or traits. Needs an admin key.
 
     Prices are USD per 1M tokens and apply to every deployment that does not override them. ``extra_attributes`` is merged
-    into the row's existing map (typed traits live there: see ``ModelTraits``); pass a key as null to drop it.
+    into the row's existing map (typed traits live there: see ``ModelTraits``); pass a key as null to drop it. A model is
+    created INACTIVE (hidden from listings); ``status="ACTIVE"`` is refused until a ``verify_profile`` run passes on it,
+    unless ``force=True``.
 
     Args:
         model: registered name, alias, or a few words of one.
@@ -628,11 +637,12 @@ async def update_model(
         output_token_price: USD/1M output tokens.
         input_cache_price: USD/1M cached input tokens.
         pricing_category: cost tier (normal / cheap).
-        status: ACTIVE, DEPRECATED (still listed, flagged) or RETIRED (hidden from listings).
+        status: INACTIVE (unverified, hidden), ACTIVE (needs a passing run), DEPRECATED (listed, flagged) or RETIRED (hidden).
         reasoning_efforts: the effort levels the model accepts, cheapest first.
         default_reasoning_effort: the level sent when the caller names none.
         supports_prompt_cache_key: whether the model understands OpenAI's prompt_cache_key.
         extra_attributes: trait and attribute keys to merge into the row.
+        force: activate without a passing verification run (say why in the conversation).
     """
     pairs = (
         ("input_token_price", input_token_price),
@@ -644,6 +654,7 @@ async def update_model(
         ("default_reasoning_effort", default_reasoning_effort),
         ("supports_prompt_cache_key", supports_prompt_cache_key),
         ("extra_attributes", extra_attributes),
+        ("force", force or None),
     )
     changes: dict[str, Any] = {k: v for k, v in pairs if v is not None}
     if not changes:
@@ -780,6 +791,8 @@ def _verify_digest(profile: dict[str, Any]) -> dict[str, Any]:
     """Keep the features whose verdict is not plain ``ok`` — the rest is noise once a run passes."""
     return {
         "model": profile.get("model"),
+        "run_id": profile.get("run_id"),
+        "run_status": profile.get("run_status"),
         "declared": profile.get("declared"),
         "endpoints": [f"{e['hosting_provider']} ({e['name']})" for e in profile.get("endpoints", [])],
         "verdict_counts": dict(Counter(dim["verdict"] for dim in profile.get("dimensions", []))),
@@ -792,14 +805,19 @@ def _verify_digest(profile: dict[str, Any]) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def verify_probes() -> list[dict[str, Any]]:
-    """Free. List the capability probes ``verify_profile`` runs (id, dimension, intent, the flag each speaks to).
+async def verify_probes(purpose: str = "chat", model: str | None = None) -> list[dict[str, Any]]:
+    """Free. List the probes ``verify_profile`` runs (id, dimension, section, intent, the flag each speaks to).
 
+    Media suites depend on the model's traits (its listed sizes, resolutions...), so pass ``model`` for those.
     Use it to pick an ``only=[...]`` subset before spending money. Needs a dev key but calls no model.
+
+    Args:
+        purpose: chat (default), vision, audio, tts, images, video, embed, ocr, decision, audio_isolation, speech_to_speech.
+        model: a registered model name; its own suite is returned and ``purpose`` is ignored.
     """
     try:
         async with _client() as client:
-            return await client.verify_probes()
+            return await client.verify_probes(purpose=purpose, model=model)
     except LLMError as exc:
         return [{"error": _dev_error(exc)}]
 
@@ -809,17 +827,17 @@ async def verify_profile(
     model: str,
     only: list[str] | None = None,
     *,
+    deployment: str | None = None,
     every_replica: bool = False,
     include_parked: bool = False,
     full: bool = False,
 ) -> dict[str, Any]:
-    """SPENDS REAL MONEY. Probe what a chat model's endpoints really accept, and diff it against the catalog.
+    """SPENDS REAL MONEY. Probe what a model's endpoints really accept, diff it against the catalog, and record the run.
 
-    Answers "do we restrict this model too much, or not enough?". For every feature — images,
-    multi-image, tools, forced/parallel tool calls, tools+reasoning, each reasoning effort level,
-    JSON object/schema mode, temperature, top_p, stop, n, seed, penalties, logprobs,
-    prompt_cache_key, truncation — it works out what Gate would do to the request, then finds out
-    whether it had to:
+    The run is stored on the gateway; a run that passes is what unlocks ``status="ACTIVE"`` on the deployment
+    (or on the model). Chat models get the full feature suite; media models get their own (transcription formats
+    and diarization, image sizes and qualities, video resolutions, embedding batches, OCR, decisions...).
+    For every feature it works out what Gate would do to the request, then finds out whether it had to:
 
     - ``ok`` — Gate forwards it and the endpoint honours it.
     - ``over_restricted`` — Gate narrows or blocks it, but the endpoint accepts it.
@@ -837,8 +855,9 @@ async def verify_profile(
     of a cent and about a minute per hosting provider). ``verify_probes`` lists them for free.
 
     Args:
-        model: chat model name as registered on the gateway.
+        model: model name as registered on the gateway.
         only: restrict to these probe ids or dimensions (e.g. ``["images", "reasoning_efforts"]``).
+        deployment: one deployment id to verify (reached whatever its status); default is one per hosting provider.
         every_replica: probe every deployment instead of one per hosting provider.
         include_parked: probe non-ACTIVE deployments too.
         full: return every probe run, not just the features needing attention.
@@ -849,7 +868,9 @@ async def verify_profile(
     """
     try:
         async with _client() as client:
-            profile = await client.verify_profile(model, only=only, every_replica=every_replica, include_parked=include_parked)
+            profile = await client.verify_profile(
+                model, only=only, deployment=deployment, every_replica=every_replica, include_parked=include_parked
+            )
     except LLMError as exc:
         return {"error": _dev_error(exc)}
     return profile if full else _verify_digest(profile)
