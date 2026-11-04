@@ -157,7 +157,7 @@ class ContextEdits(BaseModel):
 
 
 class CompactionPolicy(BaseModel):
-    """Summarize the history once the prompt passes a size; Claude does it server-side and returns a ``Compaction`` to replay."""
+    """Summarize the history once the prompt passes a size, Claude server-side or Gate in words, returning a ``Compaction`` to replay."""
 
     model_config = ConfigDict(extra="forbid")
 
