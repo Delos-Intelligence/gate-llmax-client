@@ -120,6 +120,7 @@ class ModelTraits(BaseModel):
         default=None, description="How tool calls leak into prose: Gemini's `Called: f({...})` or GLM's `<tool_call>` XML."
     )
     reasoning_tags: str | None = None
+    live_reasoning: bool = Field(default=False, description="Stream reasoning as it arrives instead of holding it until the answer starts.")
     max_tools: int | None = None
     audio_input: bool = False
     video_input: bool = False
