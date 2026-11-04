@@ -164,6 +164,9 @@ class CompactionPolicy(BaseModel):
     trigger_tokens: int = Field(default=150_000, ge=50_000, description="Input tokens past which the history is summarized.")
     instructions: str | None = Field(default=None, description="Summarization prompt replacing the default one whole.")
     pause_after: bool = Field(default=False, description="Return the summary alone, without answering, so turns can be re-inserted.")
+    native: bool = Field(
+        default=True, description="Let the model summarize server-side where it can; False summarizes in words, replayable on any model."
+    )
 
 
 class OnDemandCompaction(BaseModel):
@@ -172,6 +175,9 @@ class OnDemandCompaction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     instructions: str | None = Field(default=None, description="Summarization prompt replacing the default one whole.")
+    native: bool = Field(
+        default=True, description="Let the model summarize server-side where it can; False summarizes in words, replayable on any model."
+    )
 
 
 class ResolveRequest(BaseModel):

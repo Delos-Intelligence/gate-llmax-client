@@ -444,9 +444,9 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         self.compaction = policy
         return self
 
-    def compact(self, instructions: str | None = None) -> Self:
+    def compact(self, instructions: str | None = None, *, native: bool = True) -> Self:
         """Ask for a summary of the history instead of a reply; open the next history with ``Message.compacted(response.compaction)``."""
-        self.compact_now = OnDemandCompaction(instructions=instructions)
+        self.compact_now = OnDemandCompaction(instructions=instructions, native=native)
         return self
 
     def _conversation_controls(self) -> dict[str, Any]:
