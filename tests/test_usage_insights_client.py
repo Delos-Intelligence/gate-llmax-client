@@ -155,3 +155,52 @@ async def test_list_api_key_names_never_exposes_a_secret() -> None:
 
     assert keys[0].name == "cosmos prod"
     assert not hasattr(keys[0], "key_hash")
+
+
+@pytest.mark.asyncio
+async def test_usage_latency_sends_keys_and_reads_ttft_coverage() -> None:
+    """Latency filters by key name, and each row carries the two counts TTFT coverage is made of."""
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = request.url
+        return httpx.Response(200, json=[{"model": "gpt-5.6", "calls": 10, "ttft_calls": 7, "stream_calls": 8, "ttft_p50": 400}])
+
+    async with make_client(handler) as client:
+        [row] = await client.usage_latency(since="24h", keys=["cosmos prod", "cosmos beta"])
+
+    params = httpx.QueryParams(seen["url"].query.decode())
+    assert params.get_list("key") == ["cosmos prod", "cosmos beta"]
+    assert (row.calls, row.ttft_calls, row.stream_calls) == (10, 7, 8)
+
+
+@pytest.mark.asyncio
+async def test_usage_stats_reads_cached_input_tokens() -> None:
+    """Stats rows carry the cached share of their input tokens."""
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{"name": "gpt-5.6", "calls": 3, "input_tokens": 1000, "cached_input_tokens": 640}])
+
+    async with make_client(handler) as client:
+        [row] = await client.usage_stats(since="24h")
+
+    assert (row.input_tokens, row.cached_input_tokens) == (1000, 640)
+
+
+@pytest.mark.asyncio
+async def test_usage_timeseries_reads_a_duration_p50() -> None:
+    """Each bucket carries its median duration, empty where Gate has none."""
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {"t": "2026-11-04T10:00:00Z", "calls": 3, "dur_p50": 1800},
+                {"t": "2026-11-04T11:00:00Z", "calls": 1, "dur_p50": None},
+            ],
+        )
+
+    async with make_client(handler) as client:
+        points = await client.usage_timeseries(since="2h")
+
+    assert [p.dur_p50 for p in points] == [1800, None]

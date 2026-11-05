@@ -1445,6 +1445,7 @@ class LLMClient:
         models: list[str] | None = None,
         deployments: list[str] | None = None,
         hosting_providers: list[str] | None = None,
+        keys: list[str] | None = None,
         statuses: list[str] | None = None,
         buckets: list[int] | None = None,
         min_calls: int = 1,
@@ -1456,12 +1457,14 @@ class LLMClient:
         ``buckets`` are input-token edges (``[2000, 20000]``) that split each group by prompt
         size — the way to tell queueing from prompt processing. Percentiles cannot be
         pre-aggregated, so windows past two days are row-sampled; every row reports the
-        ``sample_pct`` used and ``sample`` overrides it. Requires a ``dev`` API key.
+        ``sample_pct`` used and ``sample`` overrides it. ``keys`` filters by API key *name*;
+        ``ttft_calls / stream_calls`` is the TTFT coverage. Requires a ``dev`` API key.
         """
         params: list[tuple[str, str | int | float | None]] = [("since", since), ("group", group), ("limit", limit)]
         params += [("model", m) for m in models or []]
         params += [("deployment", d) for d in deployments or []]
         params += [("hosting_provider", h) for h in hosting_providers or []]
+        params += [("key", k) for k in keys or []]
         params += [("status", s) for s in statuses or []]
         if buckets:
             params.append(("buckets", ",".join(str(b) for b in buckets)))
@@ -1498,7 +1501,7 @@ class LLMClient:
         hosting_providers: list[str] | None = None,
         keys: list[str] | None = None,
     ) -> list[TimeseriesPoint]:
-        """GET /v1/usage/timeseries — calls, failures, median TTFT and cost per time bucket.
+        """GET /v1/usage/timeseries — calls, failures, median TTFT and duration, and cost per time bucket.
 
         ``interval`` is the bucket width (``5m``, ``1h``, ``1d``); the window is capped at 500
         buckets. Requires a ``dev`` API key.
