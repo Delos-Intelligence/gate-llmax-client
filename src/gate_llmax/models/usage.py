@@ -101,6 +101,8 @@ class LatencyRow(BaseModel):
     dur_p50: int | None = None
     dur_p90: int | None = None
     decode_tps: float | None = Field(default=None, description="Output tokens per second after the first token.")
+    ttft_calls: int = Field(default=0, description="Calls that recorded a TTFT; over `stream_calls` it is the TTFT coverage.")
+    stream_calls: int = Field(default=0, description="Streamed chat calls, the only transport that records a TTFT.")
     sample_pct: int = Field(default=100, description="Percent of calls the percentiles were computed over; <100 means estimated.")
 
 
@@ -129,7 +131,7 @@ class RedirectReport(BaseModel):
 
 
 class TimeseriesPoint(BaseModel):
-    """Traffic, failures, median TTFT and spend for one time bucket."""
+    """Traffic, failures, median TTFT and duration, and spend for one time bucket."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -137,6 +139,7 @@ class TimeseriesPoint(BaseModel):
     calls: int = 0
     failures: int = 0
     ttft_p50: int | None = None
+    dur_p50: int | None = Field(default=None, description="Median duration in ms; None past a week at `1h` or `1d`, like `ttft_p50`.")
     input_tokens: int = 0
     output_tokens: int = 0
     cost: float = 0.0
@@ -155,6 +158,7 @@ class StatsRow(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     reasoning_tokens: int = 0
+    cached_input_tokens: int = Field(default=0, description="Input tokens read from the provider's prompt cache.")
     by_status: dict[str, int] = Field(default_factory=dict)
 
 

@@ -1035,6 +1035,7 @@ async def usage_latency(
     models: list[str] | None = None,
     deployments: list[str] | None = None,
     hosting_providers: list[str] | None = None,
+    keys: list[str] | None = None,
     statuses: list[str] | None = None,
     buckets: list[int] | None = None,
     min_calls: int = 1,
@@ -1053,14 +1054,16 @@ async def usage_latency(
         models: Model names to keep (unknown name = error, not empty result).
         deployments: Deployment names to keep.
         hosting_providers: Hosting provider ids to keep, e.g. ``["openrouter"]``.
+        keys: API key **names** to keep (see ``list_api_keys``).
         statuses: Statuses to aggregate; default SUCCESS only.
         buckets: Ascending input-token edges splitting each group by prompt size.
         min_calls: Hide groups with fewer calls.
         limit: Maximum rows.
 
     Returns:
-        Rows with calls, avg_in/avg_out tokens, ttft_p50/p90/p99 and dur_p50/p90 (ms), and
-        tok_s (decode tokens/second). Absent field = none. Needs a **dev** key.
+        Rows with calls, avg_in/avg_out tokens, ttft_p50/p90/p99 and dur_p50/p90 (ms), tok_s
+        (decode tokens/second), and ttft_calls / stream_calls (the TTFT coverage). Absent field =
+        none. Needs a **dev** key.
     """
     try:
         async with _client() as client:
@@ -1070,6 +1073,7 @@ async def usage_latency(
                 models=models,
                 deployments=deployments,
                 hosting_providers=hosting_providers,
+                keys=keys,
                 statuses=statuses,
                 buckets=buckets,
                 min_calls=min_calls,
@@ -1092,6 +1096,8 @@ async def usage_latency(
                 "dur_p50": r.dur_p50,
                 "dur_p90": r.dur_p90,
                 "tok_s": r.decode_tps,
+                "ttft_calls": r.ttft_calls or None,
+                "stream_calls": r.stream_calls or None,
             }
         )
         for r in rows
@@ -1107,7 +1113,7 @@ async def usage_timeseries(
     hosting_providers: list[str] | None = None,
     keys: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Free. Calls, failures, median TTFT and cost per time bucket — when did it change.
+    """Free. Calls, failures, median TTFT and duration, and cost per time bucket — when did it change.
 
     The tool for "did it start at 09:15" and "is it getting worse": one row per ``interval``
     bucket over the window. Client cancellations are not counted as failures.
@@ -1121,8 +1127,8 @@ async def usage_timeseries(
         keys: API key **names** to keep (see ``list_api_keys``).
 
     Returns:
-        Rows ``{t: "MM-DD HH:MM" (UTC), calls, fail, ttft_p50, in_tok, out_tok, cost}``.
-        Absent field = zero. Needs a **dev** key.
+        Rows ``{t: "MM-DD HH:MM" (UTC), calls, fail, ttft_p50, dur_p50, in_tok, out_tok, cost}``;
+        the two medians are absent past a week at ``1h`` or ``1d``. Absent field = zero. Needs a **dev** key.
     """
     try:
         async with _client() as client:
@@ -1143,6 +1149,7 @@ async def usage_timeseries(
                 "calls": p.calls,
                 "fail": p.failures or None,
                 "ttft_p50": p.ttft_p50,
+                "dur_p50": p.dur_p50,
                 "in_tok": p.input_tokens or None,
                 "out_tok": p.output_tokens or None,
                 "cost": round(p.cost, 4) or None,
@@ -1176,7 +1183,7 @@ async def usage_stats(
         limit: Maximum rows.
 
     Returns:
-        Rows ``{name, calls, fail, err_rate, cost, in_tok, out_tok, reason_tok, by_status}``.
+        Rows ``{name, calls, fail, err_rate, cost, in_tok, cached_tok, out_tok, reason_tok, by_status}``.
         Absent field = zero. Needs a **dev** key.
     """
     try:
@@ -1193,6 +1200,7 @@ async def usage_stats(
                 "err_rate": r.error_rate or None,
                 "cost": round(r.cost, 4) or None,
                 "in_tok": r.input_tokens or None,
+                "cached_tok": r.cached_input_tokens or None,
                 "out_tok": r.output_tokens or None,
                 "reason_tok": r.reasoning_tokens or None,
                 "by_status": r.by_status or None,
