@@ -100,7 +100,7 @@ def test_images_reach_the_model_inside_the_tool_message(monkeypatch: Any) -> Non
 
 
 def test_added_tools_are_offered_from_the_next_turn(monkeypatch: Any) -> None:
-    """A result's ``add_tools`` reach the next turn's tool list, once each, beside the ones already offered."""
+    """A result's named ``add_tools`` reach the next turn's tool list, once each, beside the ones already offered."""
     offered: list[list[str]] = []
     scripted = _scripted_stream()
 
@@ -111,9 +111,10 @@ def test_added_tools_are_offered_from_the_next_turn(monkeypatch: Any) -> None:
 
     monkeypatch.setattr(client_mod.LLMClient, "_stream", _stream)
     contacts = {"type": "function", "function": {"name": "get_contacts"}}
+    search = {"type": "function", "function": {"name": "search"}}
 
     async def executor(tool_id: str, name: str, args: dict) -> AsyncIterator[ToolStreamItem]:  # noqa: ARG001
-        yield ToolResult(output="loaded", add_tools=[contacts, contacts, {"type": "function", "function": {"name": "search"}}])
+        yield ToolResult(output="loaded", add_tools=[contacts, contacts, search, {"type": "function"}])
 
     client = LLMClient(api_key="k", base_url="http://x")
     builder = client.request(prompt="hi", operation="test_streaming_tools").with_tools(

@@ -157,15 +157,14 @@ async def _drain_streaming_tool(
 
 def _tool_schema_name(tool: Mapping[str, Any]) -> str | None:
     function = tool.get("function")
-    return function.get("name") if isinstance(function, Mapping) else tool.get("name")
+    return function.get("name") if isinstance(function, Mapping) else None
 
 
-def _new_tools(offered: list[dict[str, Any]], added: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The ``added`` schemas whose name is not offered yet, each once."""
+def _unoffered_tools(offered: list[dict[str, Any]], added: list[dict[str, Any]]) -> list[dict[str, Any]]:
     names = {_tool_schema_name(tool) for tool in offered}
     fresh: list[dict[str, Any]] = []
     for tool in added:
-        if (name := _tool_schema_name(tool)) not in names:
+        if (name := _tool_schema_name(tool)) is not None and name not in names:
             names.add(name)
             fresh.append(dict(tool))
     return fresh
@@ -1158,7 +1157,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
                     yield StreamChunk(text=item.content)
                 else:
                     messages.append(Message.tool(tc.id, item.output or "", name=tc.function.name, images=item.images))
-                    tools.extend(_new_tools(tools, item.add_tools))
+                    tools.extend(_unoffered_tools(tools, item.add_tools))
                     answered.add(tc.id)
                     if not item.redo:
                         retrigger = False
