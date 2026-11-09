@@ -97,3 +97,29 @@ def test_images_reach_the_model_inside_the_tool_message(monkeypatch: Any) -> Non
         TextMessage(text="[image returned]"),
         ImageMessage(b64="iVBORw0KGgo=", media_type="image/png"),
     ]
+
+
+def test_added_tools_are_offered_from_the_next_turn(monkeypatch: Any) -> None:
+    """A result's ``add_tools`` reach the next turn's tool list, once each, beside the ones already offered."""
+    offered: list[list[str]] = []
+    scripted = _scripted_stream()
+
+    async def _stream(self: LLMClient, request: Any, *, priority: int = 0) -> AsyncIterator[StreamChunk]:
+        offered.append([tool["function"]["name"] for tool in request.tools or []])
+        async for chunk in scripted(self, request, priority=priority):
+            yield chunk
+
+    monkeypatch.setattr(client_mod.LLMClient, "_stream", _stream)
+    contacts = {"type": "function", "function": {"name": "get_contacts"}}
+
+    async def executor(tool_id: str, name: str, args: dict) -> AsyncIterator[ToolStreamItem]:  # noqa: ARG001
+        yield ToolResult(output="loaded", add_tools=[contacts, contacts, {"type": "function", "function": {"name": "search"}}])
+
+    client = LLMClient(api_key="k", base_url="http://x")
+    builder = client.request(prompt="hi", operation="test_streaming_tools").with_tools(
+        [{"type": "function", "function": {"name": "search"}}], stream_executor=executor
+    )
+    asyncio.run(_collect(builder))
+
+    assert offered == [["search"], ["search", "get_contacts"]]
+    assert [tool["function"]["name"] for tool in builder.tools] == ["search"]

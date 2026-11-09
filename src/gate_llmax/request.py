@@ -77,12 +77,14 @@ class ToolResult(BaseModel):
     ``output`` becomes the tool message content, ``images`` ride along in the same message
     for the model to see. ``redo`` controls whether the model is re-invoked after the tools
     run — ``False`` ends the loop (e.g. the tool already produced the final answer and there
-    is nothing left for the model to do).
+    is nothing left for the model to do). ``add_tools`` are function schemas offered to the
+    model from the next turn on, so a tool can load others on demand.
     """
 
     output: str | None = None
     images: list[ImageMessage] = Field(default_factory=list)
     redo: bool = True
+    add_tools: list[dict[str, Any]] = Field(default_factory=list)
 
 
 ToolStreamItem = ToolProgress | ToolResult
@@ -151,6 +153,22 @@ async def _drain_streaming_tool(
     async for item in executor(tool_call.id, tool_call.function.name, args):
         await queue.put((tool_call, item))
     await queue.put((tool_call, None))
+
+
+def _tool_schema_name(tool: Mapping[str, Any]) -> str | None:
+    function = tool.get("function")
+    return function.get("name") if isinstance(function, Mapping) else tool.get("name")
+
+
+def _new_tools(offered: list[dict[str, Any]], added: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The ``added`` schemas whose name is not offered yet, each once."""
+    names = {_tool_schema_name(tool) for tool in offered}
+    fresh: list[dict[str, Any]] = []
+    for tool in added:
+        if (name := _tool_schema_name(tool)) not in names:
+            names.add(name)
+            fresh.append(dict(tool))
+    return fresh
 
 
 def first_ready_success[R](results: dict[int, R], is_success: Callable[[R], bool]) -> tuple[int, R] | None:
@@ -1095,6 +1113,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
                 yield chunk
             return
         messages = list(self.messages)
+        tools = list(self.tools or [])
         for _ in range(self.tool_max_iters):
             allow_tools = self.tool_max_tokens_before_use is None or _conversation_token_count(messages) <= self.tool_max_tokens_before_use
             turn_messages = messages if allow_tools else [*messages, Message.user(_TOOL_BUDGET_EXCEEDED_NOTE)]
@@ -1103,7 +1122,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
                     "messages": turn_messages,
                     "tool_executor": None,
                     "tool_stream_executor": None,
-                    "tools": self.tools if allow_tools else None,
+                    "tools": tools if allow_tools else None,
                 },
             )
             text_parts: list[str] = []
@@ -1139,6 +1158,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
                     yield StreamChunk(text=item.content)
                 else:
                     messages.append(Message.tool(tc.id, item.output or "", name=tc.function.name, images=item.images))
+                    tools.extend(_new_tools(tools, item.add_tools))
                     answered.add(tc.id)
                     if not item.redo:
                         retrigger = False
