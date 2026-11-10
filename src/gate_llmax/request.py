@@ -129,13 +129,30 @@ def _accumulate_tool_call_deltas(acc: dict[int, ToolCall], deltas: list[Any]) ->
             slot.function.arguments += fn["arguments"]
 
 
+def _parse_tool_args(tool_call: ToolCall) -> dict[str, Any] | str:
+    """The call's arguments as an object, or the error the model reads instead of a result.
+
+    Invalid JSON still runs with ``{}``. Valid JSON that is not an object (a list,
+    a string, a number) never reaches the executor: every executor reads it as a
+    mapping, and the model can only fix what it is told about.
+    """
+    try:
+        args = json.loads(tool_call.function.arguments or "{}")
+    except json.JSONDecodeError:
+        return {}
+    if isinstance(args, dict):
+        return args
+    return (
+        f"Error: the arguments of `{tool_call.function.name}` must be a JSON object of named parameters, "
+        f"not a JSON {type(args).__name__}. Call it again with an object."
+    )
+
+
 async def _run_tool_call(tool_call: ToolCall, executor: ToolExecutor) -> tuple[ToolCall, str]:
     """Parse one tool call's arguments and run it through ``executor``."""
-    raw_args = tool_call.function.arguments or "{}"
-    try:
-        args = json.loads(raw_args)
-    except json.JSONDecodeError:
-        args = {}
+    args = _parse_tool_args(tool_call)
+    if isinstance(args, str):
+        return tool_call, args
     output = await executor(tool_call.id, tool_call.function.name, args)
     return tool_call, output
 
@@ -145,14 +162,21 @@ async def _drain_streaming_tool(
     tool_call: ToolCall,
     queue: asyncio.Queue[tuple[ToolCall, ToolStreamItem | None]],
 ) -> None:
-    """Run one streaming tool, pushing each item to ``queue``; a trailing ``None`` signals done."""
+    """Run one streaming tool, pushing each item to ``queue``; a trailing ``None`` signals done.
+
+    The ``None`` is pushed even when the executor raises: the consumer counts them
+    to know every tool is over, so a missing one left it awaiting the queue forever.
+    The exception itself stays on the task, for the consumer's ``gather`` to raise.
+    """
     try:
-        args = json.loads(tool_call.function.arguments or "{}")
-    except json.JSONDecodeError:
-        args = {}
-    async for item in executor(tool_call.id, tool_call.function.name, args):
-        await queue.put((tool_call, item))
-    await queue.put((tool_call, None))
+        args = _parse_tool_args(tool_call)
+        if isinstance(args, str):
+            await queue.put((tool_call, ToolResult(output=args)))
+            return
+        async for item in executor(tool_call.id, tool_call.function.name, args):
+            await queue.put((tool_call, item))
+    finally:
+        queue.put_nowait((tool_call, None))
 
 
 def _tool_schema_name(tool: Mapping[str, Any]) -> str | None:
