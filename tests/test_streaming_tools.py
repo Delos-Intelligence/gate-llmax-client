@@ -9,6 +9,8 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
+import pytest
+
 import gate_llmax.client as client_mod
 from gate_llmax import LLMClient, ToolProgress, ToolResult, ToolStreamItem
 from gate_llmax.models.messages import ImageMessage, TextMessage
@@ -124,3 +126,58 @@ def test_added_tools_are_offered_from_the_next_turn(monkeypatch: Any) -> None:
 
     assert offered == [["search"], ["search", "get_contacts"]]
     assert [tool["function"]["name"] for tool in builder.tools] == ["search"]
+
+
+def _stream_calling(arguments: str) -> Any:
+    """Stub for ``LLMClient._stream``: the first turn calls ``search`` with ``arguments``, later turns answer."""
+    sent: list[Any] = []
+    state = {"i": 0}
+
+    async def _stream(self: LLMClient, request: Any, *, priority: int = 0) -> AsyncIterator[StreamChunk]:  # noqa: ARG001
+        sent.append([message.model_copy(deep=True) for message in request.messages])
+        turn = state["i"]
+        state["i"] += 1
+        if turn == 0:
+            yield StreamChunk(tool_calls_delta=[{"index": 0, "id": "call_1", "function": {"name": "search", "arguments": arguments}}])
+        else:
+            yield StreamChunk(text="final answer")
+
+    _stream.sent = sent  # type: ignore[attr-defined]
+    return _stream
+
+
+def test_non_object_arguments_reach_the_model_not_the_executor(monkeypatch: Any) -> None:
+    """Valid JSON that is not an object is answered with an error the model reads; the executor never sees it."""
+    stream = _stream_calling('[{"q": "x"}]')
+    monkeypatch.setattr(client_mod.LLMClient, "_stream", stream)
+    called: list[Any] = []
+
+    async def executor(tool_id: str, name: str, args: dict) -> AsyncIterator[ToolStreamItem]:  # noqa: ARG001
+        called.append(args)
+        yield ToolResult(output="never")
+
+    client = LLMClient(api_key="k", base_url="http://x")
+    builder = client.request(prompt="hi", operation="test_streaming_tools").with_tools(
+        [{"type": "function", "function": {"name": "search"}}], stream_executor=executor
+    )
+    assert asyncio.run(asyncio.wait_for(_collect(builder), timeout=5)) == "final answer"
+    assert called == []
+    tool_message = stream.sent[1][-1]
+    assert tool_message.tool_call_id == "call_1"
+    assert "must be a JSON object" in str(tool_message.content)
+
+
+def test_a_raising_executor_surfaces_instead_of_hanging(monkeypatch: Any) -> None:
+    """An executor that raises ends the stream with its exception; the loop no longer waits for a done marker forever."""
+    monkeypatch.setattr(client_mod.LLMClient, "_stream", _stream_calling('{"q": "x"}'))
+
+    async def executor(tool_id: str, name: str, args: dict) -> AsyncIterator[ToolStreamItem]:  # noqa: ARG001
+        raise AttributeError("boom")
+        yield ToolResult(output="never")  # pragma: no cover
+
+    client = LLMClient(api_key="k", base_url="http://x")
+    builder = client.request(prompt="hi", operation="test_streaming_tools").with_tools(
+        [{"type": "function", "function": {"name": "search"}}], stream_executor=executor
+    )
+    with pytest.raises(AttributeError, match="boom"):
+        asyncio.run(asyncio.wait_for(_collect(builder), timeout=5))
