@@ -177,12 +177,14 @@ class StreamMeter:
         """Start before the first leg."""
         self.legs: list[Leg] = []
         self.chunks = 0
+        self.resumed = False  # a leg dropped after Gate received it, so a new one went out
         self.served_model: str | None = None
         self.finish_reason = ""
         self.native_finish_reason = ""
 
     def start_leg(self, prefix: str = "") -> None:
         """A request goes out, re-sending ``prefix`` (the text already delivered) when it resumes."""
+        self.resumed = self.resumed or bool(self.legs)
         self.legs.append(Leg(prefix=prefix))
 
     def unsent(self) -> None:
@@ -228,7 +230,7 @@ class StreamMeter:
             return False
         if error is None or isinstance(error, (GeneratorExit, asyncio.CancelledError, LLMTimeoutError, LLMConnectionError)):
             return True
-        return self.chunks > 0
+        return self.chunks > 0 or self.resumed
 
     def reported_usage(self, *, model: str, operation: str, call_id: UUID) -> RawUsage:
         """The legs Gate reported, summed, unflagged.

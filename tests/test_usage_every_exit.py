@@ -421,8 +421,13 @@ async def test_a_resume_that_cannot_connect_fires_the_legs_sent(error: type[http
     ],
     ids=["429", "503", "error-frame"],
 )
-async def test_a_refused_resume_fires_the_legs_gate_served(refusal: Callable[[], httpx.Response], raised: type[Exception]) -> None:
-    gate = Gate(scripted(stream(text("Roses are "), end="drop"), refusal))
+# The first leg reached Gate whether or not it delivered a chunk before it dropped.
+@pytest.mark.parametrize("delivered", ["Roses are ", ""], ids=["after-text", "before-any-chunk"])
+async def test_a_refused_resume_fires_the_legs_gate_served(
+    refusal: Callable[[], httpx.Response], raised: type[Exception], delivered: str
+) -> None:
+    first = stream(text(delivered), end="drop") if delivered else stream(end="drop")
+    gate = Gate(scripted(first, refusal))
     client, usages = make_client(gate)
 
     with pytest.raises(raised):
@@ -430,7 +435,7 @@ async def test_a_refused_resume_fires_the_legs_gate_served(refusal: Callable[[],
 
     # Gate refused the resume before any chunk, so served (and billed) nothing for it: the first leg only.
     assert len(gate.ids) == 2
-    assert_estimate(usages.one, input_tokens=PROMPT_TOKENS, output_tokens=count_text("Roses are "), price=PRICES["m"])
+    assert_estimate(usages.one, input_tokens=PROMPT_TOKENS, output_tokens=count_text(delivered), price=PRICES["m"])
 
 
 async def test_a_resume_that_cannot_connect_fires_what_gate_reported_for_the_legs_sent() -> None:
