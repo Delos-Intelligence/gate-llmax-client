@@ -667,6 +667,36 @@ async def test_batch_multicall_prices_gate_s_timed_out_answer() -> None:
     assert [u.call_id for u in usages.seen] == [gate.ids[0], gate.ids[0]]
 
 
+async def a_wins_b_hangs(request: httpx.Request) -> httpx.Response:
+    model = json.loads(request.content)["target"]["model"]
+    if model == "b":
+        await asyncio.sleep(3600)
+    return httpx.Response(200, json=answer(model))
+
+
+async def test_call_best_bills_its_cancelled_loser_before_it_returns() -> None:
+    gate = Gate(a_wins_b_hangs)
+    client, usages = make_client(gate)
+
+    response = await client.request(prompt=PROMPT, operation="t").call_best(["a", "b"])
+
+    assert response.model == "a"
+    assert [(u.model, u.estimated) for u in usages.seen] == [("a", False), ("b", True)]
+    assert_estimate(usages.seen[1], input_tokens=PROMPT_TOKENS, output_tokens=0, price=PRICES["b"])
+    assert {u.call_id for u in usages.seen} == set(gate.ids)
+
+
+def test_call_best_sync_bills_its_cancelled_loser() -> None:
+    # The loop ends as call_best returns, cancelling whatever is still pending.
+    gate = Gate(a_wins_b_hangs)
+    client, usages = make_client(gate)
+
+    response = client.request(prompt=PROMPT, operation="t").call_best_sync(["a", "b"])
+
+    assert response.model == "a"
+    assert [(u.model, u.estimated) for u in usages.seen] == [("a", False), ("b", True)]
+
+
 # --- the list price -------------------------------------------------------------------------------
 
 

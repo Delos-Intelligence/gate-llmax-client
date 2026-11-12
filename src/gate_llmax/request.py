@@ -224,8 +224,9 @@ async def select_best[I, R](
     contiguous prefix of resolved items holds a success the rest are cancelled (so a fast
     top-priority success short-circuits everything). ``score`` ⇒ the highest-scoring success
     wins, decided once all resolve. ``accept`` short-circuits on the first success it approves.
-    Returns ``None`` if nothing succeeds before ``timeout``. Pre-sort ``items`` by a per-model
-    weight to get "best weighted model" with early cancellation.
+    Returns ``None`` if nothing succeeds before ``timeout``. Either way it returns only once the
+    runners it cancelled have finished. Pre-sort ``items`` by a per-model weight to get "best
+    weighted model" with early cancellation.
     """
     tasks: dict[asyncio.Task[R], int] = {asyncio.create_task(runner(item)): i for i, item in enumerate(items)}
     results: dict[int, R] = {}
@@ -259,6 +260,8 @@ async def select_best[I, R](
     finally:
         for task in pending:
             task.cancel()
+        # A cancelled runner still works on its way out (a call bills its estimate): wait for it, or asyncio.run cuts it off.
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 def _parse_json(text: str, *, loose: bool, repair: bool = False) -> JsonDict | None:
