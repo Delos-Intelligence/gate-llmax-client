@@ -41,6 +41,7 @@ from .exceptions import (
     LLMServerError,
     LLMTimeoutError,
 )
+from .metering import Closing, MeteredStream, StreamMeter, bears_usage, chunk_usage, estimated_usage, settle
 from .multicall import execute_multicall
 from .parsing import extract_json_from_text, extract_json_list_from_text
 from .tokens import count, estimate_input_tokens
@@ -590,17 +591,84 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         if self.cast_json_enabled and response.json_object is None and response.raw_text:
             response.json_object = _parse_json(response.raw_text, loose=self.loose_edges, repair=self.repair)
 
+    async def _bill(self, usage: RawUsage) -> None:
+        """Hand one dispatch's usage to ``on_usage``, then to the usage callbacks and the client's total."""
+        if self.on_usage is not None:
+            await self.on_usage(usage)
+        await self._fire_usage(usage)
+
+    async def _estimate(
+        self,
+        model: str,
+        call_id: UUID | None,
+        input_tokens: int,
+        output_tokens: int = 0,
+        *,
+        served: str | None = None,
+        finish_reason: str = "",
+    ) -> RawUsage:
+        """A usage Gate never reported, at the list price of the model that served (``served``), else of ``model``.
+
+        A group is priced as the model it serves on this request's plan. The cost is 0 when Gate
+        can't say in time; never raises.
+        """
+        price = await self.client._list_price(served or model, self.plan)  # noqa: SLF001
+        return estimated_usage(
+            price,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            operation=self.operation,
+            call_id=call_id,
+            finish_reason=finish_reason,
+        )
+
+    async def _bill_estimate(self, model: str, call_id: UUID | None, input_tokens: int) -> None:
+        """Bill a dispatch Gate never answered: an estimate of its prompt, no output."""
+        await self._bill(await self._estimate(model, call_id, input_tokens))
+
+    async def _bill_stream(self, meter: StreamMeter, model: str, call_id: UUID) -> None:
+        """Bill a streamed dispatch on its way out: the legs Gate reported, else an estimate of every leg."""
+        if meter.reported:
+            usage = meter.reported_usage(model=model, operation=self.operation, call_id=call_id)
+        else:
+            prompt = estimate_input_tokens(self.system_prompt, self.messages, self.images)
+            input_tokens, output_tokens = meter.estimated_tokens(prompt)
+            usage = await self._estimate(
+                model, call_id, input_tokens, output_tokens, served=meter.served_model, finish_reason=meter.finish_reason
+            )
+        await self._bill(usage)
+
+    async def _estimate_timeouts(self, responses: Sequence[LLMResponse]) -> None:
+        """Swap each timed-out answer's usage for a priced estimate of its prompt, under the call id it carries."""
+        timed_out = [response for response in responses if response.status == OutputStatus.TIMEOUT]
+        if not timed_out:
+            return
+        prompt = estimate_input_tokens(self.system_prompt, self.messages, self.images)
+        estimates = await asyncio.gather(*(self._estimate(r.model, r.usage.call_id, prompt) for r in timed_out))
+        for response, usage in zip(timed_out, estimates, strict=True):
+            response.usage = usage
+
     async def _call_raw(self, model: str, *, priority: int = 0, disable_usage: bool = False) -> LLMResponse:
         """One non-streaming turn: budget gate → send → cast_json → usage → callbacks. No finalize.
 
         ``disable_usage`` skips the usage callbacks (``on_usage`` + billing) for this turn;
-        response callbacks still fire.
+        response callbacks still fire. A turn that times out or is cancelled before Gate answers
+        fires an estimate of its prompt (``estimated=True``), then re-raises; one that could not
+        connect fires nothing, Gate never having received it.
         """
         await self._gate_budget()
         call_id = self._next_call_id()
         request = self._build_request(model, stream=False, call_id=call_id)
-        with _naming_failures(call_id):
-            response = await self.client._send(request, priority=priority)  # noqa: SLF001
+        try:
+            with _naming_failures(call_id):
+                response = await self.client._send(request, priority=priority)  # noqa: SLF001
+        except (LLMTimeoutError, asyncio.CancelledError):
+            # No answer, so no usage from Gate, but the request went out: bill its prompt as an estimate.
+            if not disable_usage:
+                prompt = estimate_input_tokens(self.system_prompt, self.messages, self.images)
+                await settle(self._bill_estimate(model, call_id, prompt), quiet=True)
+            raise
         response.usage.call_id = call_id
         self._apply_cast_json(response)
         if not disable_usage and self.on_usage is not None:
@@ -622,7 +690,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         )
         return self._finalize(raw)
 
-    async def call_stream(  # noqa: PLR0912
+    async def call_stream(
         self,
         model: str,
         *,
@@ -642,28 +710,39 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         ``usage_chunks`` controls when the usage callbacks fire: ``False`` (default) fires once at
         the end with the final usage (one DB write per stream); ``True`` fires on every usage-bearing
         chunk. Either way the chunks always carry their usage fields.
+
+        The usage fires on every exit of a dispatch Gate received: the end, the caller stopping
+        (``aclose()``), a cancellation, a timeout, a cut-off, or an error after chunks arrived. It
+        is Gate's report, summed over the legs of a resumed stream; when Gate reported no leg, an
+        estimate (``estimated=True``): the prompt each leg was sent and the output it delivered,
+        at the model's list price. A caller that ``break``s out of ``async for`` without closing
+        the stream leaves it to the event loop, so its usage fires when the loop finalizes it.
         """
         if self.tool_stream_executor is not None:
-            async for chunk in self._stream_tool_loop_streaming(
+            looped = self._stream_tool_loop_streaming(
                 model,
                 smooth=smooth,
                 server_side=server_side,
                 smooth_duration_ms=smooth_duration_ms,
                 disable_usage=disable_usage,
                 usage_chunks=usage_chunks,
-            ):
-                yield chunk
+            )
+            async with Closing(looped) as chunks:
+                async for chunk in chunks:
+                    yield chunk
             return
         if self.tool_executor is not None:
-            async for chunk in self._stream_tool_loop(
+            looped = self._stream_tool_loop(
                 model,
                 smooth=smooth,
                 server_side=server_side,
                 smooth_duration_ms=smooth_duration_ms,
                 disable_usage=disable_usage,
                 usage_chunks=usage_chunks,
-            ):
-                yield chunk
+            )
+            async with Closing(looped) as chunks:
+                async for chunk in chunks:
+                    yield chunk
             return
         await self._gate_budget()
         server_paces = smooth and server_side
@@ -676,48 +755,25 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             smooth_duration_ms=smooth_duration_ms if smooth else 0,
         )
         client_paces = smooth and not server_side
-        final_usage: RawUsage | None = None
-        with _naming_failures(call_id):
-            try:
-                async for chunk in self.client._stream(request, priority=priority):  # noqa: SLF001
-                    if chunk.input_tokens is not None or chunk.output_tokens is not None or chunk.api_provider is not None:
-                        final_usage = RawUsage(
-                            input_tokens=chunk.input_tokens or 0,
-                            output_tokens=chunk.output_tokens or 0,
-                            cached_input_tokens=chunk.cached_input_tokens or 0,
-                            input_cost=chunk.input_cost or 0.0,
-                            output_cost=chunk.output_cost or 0.0,
-                            cached_input_cost=chunk.cached_input_cost or 0.0,
-                            model=model,
-                            api_provider=chunk.api_provider or "",
-                            hosting_provider=chunk.hosting_provider or "",
-                            region=chunk.region or "",
-                            duration_ms=chunk.duration_ms or 0,
-                            ttft_ms=chunk.ttft_ms,
-                            operation=self.operation,
-                            call_id=call_id,
-                        )
-                        if usage_chunks and not disable_usage:
-                            if self.on_usage is not None:
-                                await self.on_usage(final_usage)
-                            await self._fire_usage(final_usage)
-                    yield chunk
-                    if client_paces and chunk.text:
-                        await asyncio.sleep(smooth_duration_ms / 1000)
-            except (LLMTimeoutError, LLMConnectionError):
-                estimated = estimate_input_tokens(self.system_prompt, self.messages, self.images)
-                usage = RawUsage(model=model, input_tokens=estimated, estimated=True, operation=self.operation, call_id=call_id)
-                if not disable_usage:
-                    if self.on_usage is not None:
-                        await self.on_usage(usage)
-                    await self._fire_usage(usage)
-                raise
-        # Default: fire once at the end (one DB write); ``usage_chunks`` already fired per chunk.
-        usage = final_usage if final_usage is not None else RawUsage(model=model, estimated=True, operation=self.operation, call_id=call_id)
-        if not disable_usage and not usage_chunks:
-            if self.on_usage is not None:
-                await self.on_usage(usage)
-            await self._fire_usage(usage)
+        stream = MeteredStream.of(self.client._stream(request, priority=priority))  # noqa: SLF001
+        error: BaseException | None = None
+        try:
+            with _naming_failures(call_id):
+                async with Closing(stream) as chunks:
+                    async for chunk in chunks:
+                        if usage_chunks and not disable_usage and bears_usage(chunk):
+                            await self._bill(chunk_usage(chunk, model=model, operation=self.operation, call_id=call_id))
+                        yield chunk
+                        if client_paces and chunk.text:
+                            await asyncio.sleep(smooth_duration_ms / 1000)
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            # One usage per dispatch, however it ends; ``usage_chunks`` already fired Gate's, so it only adds a missing estimate.
+            meter = stream.meter
+            if not disable_usage and meter.owes_usage(error) and not (usage_chunks and meter.reported):
+                await settle(self._bill_stream(meter, model, call_id), quiet=error is not None)
 
     def stream(
         self,
@@ -755,32 +811,37 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         models: list[str],
         timeout: float = _DEFAULT_MULTICALL_TIMEOUT,
     ) -> list[ResponseT]:
-        """Parallel non-streaming calls to each model name."""
+        """Parallel non-streaming calls to each model name.
+
+        A model that times out comes back ``TIMEOUT`` and bills an estimate of its prompt. One that
+        fails otherwise (refused, or never connected) comes back ``TIMEOUT`` too but bills nothing,
+        as a plain ``call()`` would.
+        """
         await self._gate_budget()
         # One request per model, so one call id each.
         requests = [self._build_request(m, stream=False, call_id=self._next_call_id()) for m in models]
-        coros = [self.client._send(request) for request in requests]  # noqa: SLF001
-        responses = await execute_multicall(coros, models, timeout=timeout)  # ty:ignore[invalid-argument-type]
+        unbilled: set[UUID | None] = set()
+
+        async def send(request: LLMRequest) -> LLMResponse:
+            try:
+                return await self.client._send(request)  # noqa: SLF001
+            except LLMTimeoutError:
+                raise
+            except Exception:
+                unbilled.add(request.call_id)
+                raise
+
+        responses = await execute_multicall([send(request) for request in requests], models, timeout=timeout)
         for request, response in zip(requests, responses, strict=True):
             response.usage.call_id = request.call_id
             self._apply_cast_json(response)
+        billed = [response for response in responses if response.usage.call_id not in unbilled]
+        await self._estimate_timeouts(billed)
         if self.on_usage is not None:
-            estimated_input = estimate_input_tokens(self.system_prompt, self.messages, self.images)
-            for response in responses:
-                usage = (
-                    RawUsage(
-                        model=response.model,
-                        input_tokens=estimated_input,
-                        estimated=True,
-                        operation=self.operation,
-                        call_id=response.usage.call_id,
-                    )
-                    if response.status == OutputStatus.TIMEOUT
-                    else response.usage
-                )
-                await self.on_usage(usage)
+            for response in billed:
+                await self.on_usage(response.usage)
         for response in responses:
-            await self._fire(response)
+            await self._fire(response, disable_usage=response.usage.call_id in unbilled)
         return [self._finalize(r) for r in responses]
 
     def multicall_sync(
@@ -804,7 +865,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         order, not request order). ``index`` matches the position in ``models``.
 
         ``on_usage``, when set, fires once per yielded frame with the per-model
-        ``RawUsage`` (estimated for timed-out models).
+        ``RawUsage`` (a priced estimate for timed-out models, also on the frame's response).
         """
         await self._gate_budget()
         # One request fanned out server-side: every model's answer shares its call id.
@@ -835,25 +896,13 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             seed_routing=self.seed_routing,
             **self._conversation_controls(),
         )
-        estimated_input: int | None = None
         with _naming_failures(call_id):
             async for frame in self.client._stream_batch(request):  # noqa: SLF001
                 frame.response.usage.call_id = call_id
                 self._apply_cast_json(frame.response)
+                await self._estimate_timeouts([frame.response])
                 if self.on_usage is not None:
-                    if frame.response.status == OutputStatus.TIMEOUT:
-                        if estimated_input is None:
-                            estimated_input = estimate_input_tokens(self.system_prompt, self.messages, self.images)
-                        usage = RawUsage(
-                            model=frame.response.model,
-                            input_tokens=estimated_input,
-                            estimated=True,
-                            operation=self.operation,
-                            call_id=call_id,
-                        )
-                    else:
-                        usage = frame.response.usage
-                    await self.on_usage(usage)
+                    await self.on_usage(frame.response.usage)
                 await self._fire(frame.response)
                 yield frame.index, frame.response
 
@@ -906,15 +955,10 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         for response in responses:
             response.usage.call_id = call_id
             self._apply_cast_json(response)
+        await self._estimate_timeouts(responses)
         if self.on_usage is not None:
-            estimated_input = estimate_input_tokens(self.system_prompt, self.messages, self.images)
             for response in responses:
-                usage = (
-                    RawUsage(model=response.model, input_tokens=estimated_input, estimated=True, operation=self.operation, call_id=call_id)
-                    if response.status == OutputStatus.TIMEOUT
-                    else response.usage
-                )
-                await self.on_usage(usage)
+                await self.on_usage(response.usage)
         for response in responses:
             await self._fire(response)
         return [self._finalize(r) for r in responses]
@@ -934,9 +978,9 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         Immediate re-raise (not model-specific, no fallback):
         - ``LLMAuthError``, ``LLMCapabilityError``.
 
-        When an exception triggers a fallback, ``on_usage`` is called with
-        estimated input tokens (``estimated=True``) for the failed attempt, under
-        the call id of the request that failed (the exception's ``call_id``).
+        A failed attempt bills what a plain ``call()`` bills, under its own call
+        id: a timeout an estimate of its prompt (``estimated=True``, at the model's
+        list price), a model-not-found, a 5xx or a failed connection nothing.
         When the server returns a non-SUCCESS response, ``on_usage`` was already
         called by ``call()`` with the server-reported usage; no duplicate call
         is made.
@@ -946,7 +990,6 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         empty or every attempt raised an exception.
         """
         _fallback_exc = (LLMModelNotFoundError, LLMServerError, LLMTimeoutError, LLMConnectionError)
-        estimated_input = estimate_input_tokens(self.system_prompt, self.messages, self.images)
         last: ResponseT | None = None
         for model in models:
             try:
@@ -956,12 +999,8 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
                 # Non-SUCCESS: on_usage already fired by call(); record and try next.
                 last = resp
             except _fallback_exc as exc:
+                # The attempt billed itself, as a plain call does: a timeout its estimate, anything else nothing.
                 logger.warning("call_prefer: model=%s failed (%s), trying next", model, exc)
-                if self.on_usage is not None:
-                    failed = RawUsage(
-                        model=model, input_tokens=estimated_input, estimated=True, operation=self.operation, call_id=exc.call_id
-                    )
-                    await self.on_usage(failed)
         if last is not None:
             return last
         return self._finalize(LLMResponse(model=models[-1] if models else "", status=OutputStatus.NO_DEPLOYMENT))
@@ -1035,8 +1074,8 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         the "best weighted model" with the same early cancellation, sort ``models`` by weight
         first. With ``key`` the highest-scoring success wins (decided once all resolve).
         ``accept`` short-circuits on the first success it approves. Every model that *completes*
-        bills + fires callbacks via ``call``; only cancelled ones are spared. Returns a
-        ``NO_DEPLOYMENT`` response if every model fails.
+        bills + fires callbacks via ``call``; a cancelled one bills an estimate of its prompt, its
+        request having gone out. Returns a ``NO_DEPLOYMENT`` response if every model fails.
 
         ``greatest`` / ``lowest`` switch to SERVER-side selection: one request fans out across
         ``models`` and the gateway returns the SUCCESS whose model has the greatest/lowest
@@ -1151,19 +1190,22 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             )
             text_parts: list[str] = []
             acc: dict[int, ToolCall] = {}
-            async for chunk in turn.call_stream(
+            turn_stream = turn.call_stream(
                 model,
                 smooth=smooth,
                 server_side=server_side,
                 smooth_duration_ms=smooth_duration_ms,
                 disable_usage=disable_usage,
                 usage_chunks=usage_chunks,
-            ):
-                if chunk.text:
-                    text_parts.append(chunk.text)
-                if chunk.tool_calls_delta:
-                    _accumulate_tool_call_deltas(acc, chunk.tool_calls_delta)
-                yield chunk
+            )
+            # Closed with the loop, so a caller leaving mid-turn settles that turn's usage now.
+            async with Closing(turn_stream) as chunks:
+                async for chunk in chunks:
+                    if chunk.text:
+                        text_parts.append(chunk.text)
+                    if chunk.tool_calls_delta:
+                        _accumulate_tool_call_deltas(acc, chunk.tool_calls_delta)
+                    yield chunk
             if not acc:
                 return
             tool_calls = [acc[i] for i in sorted(acc)]
@@ -1217,19 +1259,22 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             )
             text_parts: list[str] = []
             acc: dict[int, ToolCall] = {}
-            async for chunk in turn.call_stream(
+            turn_stream = turn.call_stream(
                 model,
                 smooth=smooth,
                 server_side=server_side,
                 smooth_duration_ms=smooth_duration_ms,
                 disable_usage=disable_usage,
                 usage_chunks=usage_chunks,
-            ):
-                if chunk.text:
-                    text_parts.append(chunk.text)
-                if chunk.tool_calls_delta:
-                    _accumulate_tool_call_deltas(acc, chunk.tool_calls_delta)
-                yield chunk
+            )
+            # Closed with the loop, so a caller leaving mid-turn settles that turn's usage now.
+            async with Closing(turn_stream) as chunks:
+                async for chunk in chunks:
+                    if chunk.text:
+                        text_parts.append(chunk.text)
+                    if chunk.tool_calls_delta:
+                        _accumulate_tool_call_deltas(acc, chunk.tool_calls_delta)
+                    yield chunk
             if not acc:
                 return
             tool_calls = [acc[i] for i in sorted(acc)]
@@ -1341,8 +1386,9 @@ class StreamRequestBuilder:
 
     async def call(self, model: str) -> AsyncIterator[StreamChunk]:
         """Stream one model (``SingleTarget``)."""
-        async for chunk in self._run(model, None):
-            yield chunk
+        async with Closing(self._run(model, None)) as chunks:
+            async for chunk in chunks:
+                yield chunk
 
     async def call_prefer(self, models: list[str]) -> AsyncIterator[StreamChunk]:
         """Stream with server-side model fallback (``FallbackTarget``).
@@ -1354,8 +1400,9 @@ class StreamRequestBuilder:
         """
         if not models:
             return
-        async for chunk in self._run(models[0], models):
-            yield chunk
+        async with Closing(self._run(models[0], models)) as chunks:
+            async for chunk in chunks:
+                yield chunk
 
 
 class JsonRequestBuilder[ResponseT: JsonLLMResponse](RequestBuilder[ResponseT]):

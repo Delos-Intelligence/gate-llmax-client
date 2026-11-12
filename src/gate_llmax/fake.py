@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any
 
 from .client import LLMClient
+from .metering import ListPrice
 from .models.response import LLMResponse, RawUsage, StreamChunk
 from .types import OutputStatus
 
@@ -68,4 +69,8 @@ class FakeClient(LLMClient):
                 yield StreamChunk(text=word if i == len(words) - 1 else word + " ")
         elif text:
             yield StreamChunk(text=text)
-        yield StreamChunk(is_done=True, input_tokens=0, output_tokens=0)
+        # Priced like Gate's own usage frame, so the stream counts as reported rather than estimated.
+        yield StreamChunk(is_done=True, input_tokens=0, output_tokens=0, input_cost=0.0, output_cost=0.0)
+
+    async def _fetch_list_price(self, model: str, plan: str | None) -> ListPrice:
+        return ListPrice(input=0.0, output=0.0)

@@ -138,7 +138,8 @@ async def test_a_buffered_call_sends_one_uuid7_and_its_usage_carries_it() -> Non
 
 
 async def test_a_stream_sends_one_uuid7_and_its_usage_carries_it() -> None:
-    gate = Gate(lambda _r: event_stream(sse({"text": "po"}), sse({"text": "ng", "is_done": True, "input_tokens": 3, "output_tokens": 1})))
+    usage_frame = {"text": "ng", "is_done": True, "input_tokens": 3, "output_tokens": 1, "input_cost": 0.0, "api_provider": "p"}
+    gate = Gate(lambda _r: event_stream(sse({"text": "po"}), sse(usage_frame)))
     usages = Usages()
     client = make_client(gate, usage_callback=usages)
 
@@ -327,8 +328,13 @@ async def test_multicall_sends_one_request_per_model_and_estimates_a_timeout_und
     assert on_usage.seen[1].estimated
 
 
+def timed_out(_request: httpx.Request) -> httpx.Response:
+    msg = "slow"
+    raise httpx.ReadTimeout(msg)
+
+
 async def test_call_prefer_estimates_a_failed_attempt_under_that_attempt_s_id() -> None:
-    gate = Gate(lambda r: httpx.Response(500, json={"detail": "boom"}) if model_of(r) == "bad" else httpx.Response(200, json=answer()))
+    gate = Gate(lambda r: timed_out(r) if model_of(r) == "bad" else httpx.Response(200, json=answer()))
     on_usage = Usages()
     client = make_client(gate)
 
@@ -349,7 +355,7 @@ async def test_call_prefer_through_a_tool_loop_estimates_the_turn_that_failed() 
             return httpx.Response(200, json=answer("b"))
         if len(gate.ids) == 1:
             return httpx.Response(200, json=answer("a", tool_calls=[TOOL_CALL]))
-        return httpx.Response(500, json={"detail": "boom"})
+        return timed_out(request)
 
     gate = Gate(reply)
     on_usage = Usages()
@@ -417,7 +423,7 @@ async def test_a_media_builder_takes_a_caller_s_id_once() -> None:
 # --- estimate paths and errors -------------------------------------------------------------------
 
 
-async def test_a_stream_that_cannot_connect_is_estimated_and_raises_under_its_id() -> None:
+async def test_a_stream_that_cannot_connect_raises_under_its_id_and_bills_nothing() -> None:
     def reply(_request: httpx.Request) -> httpx.Response:
         msg = "refused"
         raise httpx.ConnectError(msg)
@@ -431,8 +437,7 @@ async def test_a_stream_that_cannot_connect_is_estimated_and_raises_under_its_id
 
     [call_id] = gate.ids
     assert raised.value.call_id == call_id
-    assert usages.ids == [call_id]
-    assert usages.seen[0].estimated
+    assert usages.ids == []  # Gate never received it
 
 
 async def test_a_stream_ending_without_usage_is_estimated_under_its_id() -> None:

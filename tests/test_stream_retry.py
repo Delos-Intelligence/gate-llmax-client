@@ -42,8 +42,17 @@ def complete(*chunks: bytes) -> httpx.Response:
     return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=b"".join([*chunks, DONE]))
 
 
+def chat_only(handler):
+    """Route chat requests to ``handler``; the list-price lookup an estimate makes gets a 404."""
+
+    def route(request: httpx.Request) -> httpx.Response:
+        return handler(request) if request.url.path == "/v1/chat/completions" else httpx.Response(404)
+
+    return route
+
+
 def make_client(handler) -> LLMClient:
-    transport = httpx.MockTransport(handler)
+    transport = httpx.MockTransport(chat_only(handler))
     http = httpx.AsyncClient(base_url="http://gate.test", transport=transport)
     return LLMClient(api_key="k", base_url="http://gate.test", httpx_aclient=http)
 

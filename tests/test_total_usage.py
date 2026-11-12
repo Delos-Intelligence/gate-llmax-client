@@ -61,6 +61,26 @@ def test_total_usage_excludes_disable_usage(monkeypatch: Any) -> None:
     assert client.total_usage == pytest.approx(0.03)  # only the billed call counted
 
 
+def test_total_usage_excludes_an_estimate_its_callbacks_still_get(monkeypatch: Any) -> None:
+    """A priced estimate reaches the usage callbacks, but a run billing ``total_usage`` bills only what Gate reported."""
+
+    async def _send(self: LLMClient, request: LLMRequest, *, priority: int = 0) -> LLMResponse:  # noqa: ARG001
+        return LLMResponse(model="m", usage=RawUsage(model="m", input_cost=0.01, output_cost=0.02, estimated=True))
+
+    monkeypatch.setattr(client_mod.LLMClient, "_send", _send)
+    seen: list[RawUsage] = []
+
+    async def _count(usage: RawUsage) -> None:
+        seen.append(usage)
+
+    client = LLMClient(api_key="k", base_url="http://x", usage_callback=_count)
+    view = client.prefix_operation("app")
+
+    asyncio.run(view.request(prompt="a", operation="estimated").call("m"))
+    assert [u.total_cost for u in seen] == [pytest.approx(0.03)]
+    assert view.total_usage == client.total_usage == 0.0
+
+
 def test_streaming_surfaces_cost_to_usage_callback(monkeypatch: Any) -> None:
     """The streaming terminal frame's server-computed cost reaches usage_callback + total_usage."""
     monkeypatch.setattr(client_mod.LLMClient, "_stream", _stream_costing)
