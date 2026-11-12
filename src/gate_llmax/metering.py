@@ -231,7 +231,11 @@ class StreamMeter:
         return self.chunks > 0
 
     def reported_usage(self, *, model: str, operation: str, call_id: UUID) -> RawUsage:
-        """The legs Gate reported, summed; a leg it never reported adds nothing (Gate's log still has it)."""
+        """The legs Gate reported, summed, unflagged.
+
+        Known gap: a leg Gate never reported (one dropped before its usage frame) adds nothing, so its prompt
+        and output go uncounted, as before per-leg metering; Gate's log still has it.
+        """
         usages = [chunk_usage(leg.report, model=model, operation=operation, call_id=call_id) for leg in self.legs if leg.report is not None]
         total = usages[0]
         for usage in usages[1:]:

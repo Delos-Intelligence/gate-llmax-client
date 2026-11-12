@@ -1,4 +1,4 @@
-"""Every dispatch fires exactly one usage however it ends: Gate's report summed over its legs, else a priced estimate.
+"""Every dispatch fires exactly one usage however it ends: Gate's report summed over the legs it reported, else a priced estimate.
 
 Self-contained — a MockTransport stands in for the gateway: it answers chat requests from a script
 and list prices from a table, and records the call id of every chat request and every price lookup.
@@ -290,7 +290,12 @@ async def test_disable_usage_fires_nothing_on_any_exit() -> None:
 # --- legs: a resumed stream is one dispatch -------------------------------------------------------
 
 
-async def test_a_resumed_stream_reported_on_its_last_leg_fires_that_leg() -> None:
+async def test_known_gap_a_resumed_stream_reported_on_its_last_leg_bills_that_leg_alone() -> None:
+    """Known gap: the dropped leg's prompt and output are not counted, so the usage is the last leg alone, unflagged.
+
+    Same money as before per-leg metering (the client fired the last usage frame); splitting the reported and
+    estimated parts on ``RawUsage`` is tracked separately.
+    """
     gate = Gate(scripted(stream(text("Roses are "), end="drop"), stream(text("red."), sse(frame(20, 3)))))
     client, usages = make_client(gate)
 

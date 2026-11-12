@@ -731,9 +731,10 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
 
         The usage fires on every exit of a dispatch Gate received: the end, the caller stopping
         (``aclose()``), a cancellation, a timeout, a cut-off, or an error after chunks arrived. It
-        is Gate's report, summed over the legs of a resumed stream; when Gate reported no leg, an
-        estimate (``estimated=True``): the prompt each leg was sent and the output it delivered,
-        at the model's list price. A caller that ``break``s out of ``async for`` without closing
+        is Gate's report, summed over the legs of a resumed stream that Gate reported (a leg dropped
+        before its report is not counted); when Gate reported no leg, an estimate
+        (``estimated=True``): the prompt each leg was sent and the output it delivered, at the
+        model's list price. A caller that ``break``s out of ``async for`` without closing
         the stream leaves it to the event loop, so its usage fires when the loop finalizes it.
         """
         if self.tool_stream_executor is not None:
