@@ -833,8 +833,8 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         """Parallel non-streaming calls to each model name.
 
         A model that times out comes back ``TIMEOUT`` and bills an estimate of its prompt. One that
-        fails otherwise (refused, or never connected) comes back ``TIMEOUT`` too but bills nothing,
-        as a plain ``call()`` would.
+        fails otherwise (refused, never connected, or its connection lost) comes back ``TIMEOUT`` too
+        but bills nothing; a plain ``call()`` that loses its connection bills an estimate.
         """
         await self._gate_budget()
         # One request per model, so one call id each.
@@ -884,9 +884,10 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
 
         ``on_usage``, when set, fires once per yielded frame with the per-model
         ``RawUsage`` (a priced estimate for timed-out models, also on the frame's response).
-        A stream left before every model answered (the caller stops reading, is cancelled, or the
-        stream times out) bills each model still unanswered an estimate of its prompt, under the
-        stream's call id; one Gate never received or refused bills nothing.
+        A stream left before every model answered (the caller stops reading, is cancelled, the
+        stream times out or loses its connection, or an error follows an answer) bills each model
+        still unanswered an estimate of its prompt, under the stream's call id; one Gate never
+        received or refused bills nothing.
         """
         await self._gate_budget()
         # One request fanned out server-side: every model's answer shares its call id.
@@ -930,9 +931,13 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
                             await self.on_usage(frame.response.usage)
                         await self._fire(frame.response)
                         yield frame.index, frame.response
-        except (GeneratorExit, asyncio.CancelledError, LLMTimeoutError) as exc:
-            # Left early: the models Gate was still running bill an estimate of their prompt.
-            if unanswered and not timed_out_unsent(exc):
+        except BaseException as exc:
+            # Left early: the models Gate was still running bill an estimate of their prompt. It ran
+            # them once it answered one, or when the stream was cut after the send.
+            received = len(unanswered) < len(models) or isinstance(
+                exc, (GeneratorExit, asyncio.CancelledError, LLMTimeoutError, *LOST_AFTER_SEND)
+            )
+            if unanswered and received and not timed_out_unsent(exc):
                 await settle(self._bill_estimates([models[i] for i in sorted(unanswered)], call_id), quiet=True)
             raise
 
@@ -952,9 +957,9 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         useful when bundles mix providers with different ``extra_body`` requirements
         (e.g. Gemini 3 vs Gemini 2.5 thinking-config schemas).
 
-        A batch that times out or is cancelled before Gate answers bills each model an estimate
-        of its prompt under the batch's call id, then re-raises; one Gate never received or
-        refused bills nothing.
+        A batch that times out, is cancelled or loses its connection before Gate answers bills
+        each model an estimate of its prompt under the batch's call id, then re-raises; one Gate
+        never received or refused bills nothing.
         """
         await self._gate_budget()
         # One request fanned out server-side: every model's answer shares its call id.
@@ -987,7 +992,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         try:
             with _naming_failures(call_id):
                 responses = await self.client._send_batch(batch)  # noqa: SLF001
-        except (LLMTimeoutError, asyncio.CancelledError) as exc:
+        except (LLMTimeoutError, asyncio.CancelledError, *LOST_AFTER_SEND) as exc:
             # No answer, so no usage from Gate; a batch that went out bills every model its prompt as an estimate.
             if not timed_out_unsent(exc):
                 await settle(self._bill_estimates(models, call_id), quiet=True)
@@ -1062,9 +1067,10 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
     ) -> ResponseT:
         """Server-side best: one request fans out across `models`, returns the SUCCESS ranked best by `extra_attributes[attribute]`.
 
-        It bills the one answer it returns. A request that times out or is cancelled before Gate
-        answers bills one estimate of its prompt instead, priced as the first of ``models`` (the
-        winner is unknown), then re-raises; one Gate never received or refused bills nothing.
+        It bills the one answer it returns. A request that times out, is cancelled or loses its
+        connection before Gate answers bills one estimate of its prompt instead, priced as the first
+        of ``models`` (the winner is unknown), then re-raises; one Gate never received or refused
+        bills nothing.
         """
         await self._gate_budget()
         call_id = self._next_call_id()
@@ -1096,7 +1102,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         try:
             with _naming_failures(call_id):
                 response = await self.client._send(request)  # noqa: SLF001
-        except (LLMTimeoutError, asyncio.CancelledError) as exc:
+        except (LLMTimeoutError, asyncio.CancelledError, *LOST_AFTER_SEND) as exc:
             # No answer, so no usage from Gate; a request that went out bills its prompt as an estimate.
             if not timed_out_unsent(exc):
                 await settle(self._bill_estimates(models[:1], call_id), quiet=True)

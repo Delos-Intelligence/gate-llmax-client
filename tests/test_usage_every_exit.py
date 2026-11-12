@@ -758,6 +758,31 @@ async def test_a_cancelled_fan_out_fires_a_priced_estimate_per_model_billed(fan_
 
 
 @pytest.mark.parametrize("fan_out", FAN_OUTS)
+@pytest.mark.parametrize("error", [httpx.ReadError, httpx.RemoteProtocolError], ids=lambda error: error.__name__)
+async def test_a_fan_out_losing_its_connection_fires_a_priced_estimate_per_model_billed(
+    fan_out: str, error: type[httpx.TransportError]
+) -> None:
+    def drop() -> httpx.Response:
+        msg = "connection lost before the answer"
+        raise error(msg)
+
+    send, billed = FAN_OUTS[fan_out]
+    gate = Gate(scripted(drop))
+    on_usage = Usages()
+    client, usages = make_client(gate)
+
+    with pytest.raises(error):
+        await send(client.request(prompt=PROMPT, operation="t", on_usage=on_usage))
+
+    # Gate received the request, as a plain call() losing its connection: each model it ran bills its prompt.
+    assert [u.model for u in usages.seen] == billed
+    for usage in usages.seen:
+        assert_estimate(usage, input_tokens=PROMPT_TOKENS, output_tokens=0, price=PRICES[usage.model])
+        assert usage.call_id == gate.ids[0]
+    assert on_usage.seen == usages.seen
+
+
+@pytest.mark.parametrize("fan_out", FAN_OUTS)
 @pytest.mark.parametrize("error", UNSENT, ids=lambda error: error.__name__)
 async def test_a_fan_out_gate_never_received_fires_nothing(fan_out: str, error: type[httpx.TransportError]) -> None:
     send, _billed = FAN_OUTS[fan_out]
@@ -844,6 +869,55 @@ async def test_a_multicall_stream_timing_out_estimates_every_model_not_yet_answe
 
     assert [(u.model, u.estimated) for u in usages.seen] == [("a", False), ("b", True)]
     assert usages.seen[1].call_id == gate.ids[0]
+
+
+async def test_a_multicall_stream_losing_its_connection_estimates_every_model_not_yet_answered() -> None:
+    gate = Gate(scripted(stream(batch_frame(1, "b"), end="drop")))
+    client, usages = make_client(gate)
+
+    with pytest.raises(httpx.ReadError):
+        [f async for f in client.request(prompt=PROMPT, operation="t").multicall_stream(["a", "b", "m"])]
+
+    assert [(u.model, u.estimated) for u in usages.seen] == [("b", False), ("a", True), ("m", True)]
+    assert {u.call_id for u in usages.seen} == {gate.ids[0]}
+
+
+@pytest.mark.parametrize("error", [httpx.ReadError, httpx.RemoteProtocolError], ids=lambda error: error.__name__)
+async def test_a_multicall_stream_losing_its_connection_before_any_answer_estimates_every_model(
+    error: type[httpx.TransportError],
+) -> None:
+    def drop() -> httpx.Response:
+        msg = "connection lost before the answer"
+        raise error(msg)
+
+    gate = Gate(scripted(drop))
+    client, usages = make_client(gate)
+
+    with pytest.raises(error):
+        [f async for f in client.request(prompt=PROMPT, operation="t").multicall_stream(["a", "b"])]
+
+    assert [(u.model, u.estimated) for u in usages.seen] == [("a", True), ("b", True)]
+    assert {u.call_id for u in usages.seen} == {gate.ids[0]}
+
+
+async def test_a_multicall_stream_failing_after_an_answer_estimates_every_model_not_yet_answered() -> None:
+    class Failing(Usages):
+        async def __call__(self, usage: RawUsage) -> None:
+            await super().__call__(usage)
+            if not usage.estimated:
+                msg = "the caller's callback failed"
+                raise RuntimeError(msg)
+
+    gate = Gate(scripted(stream(batch_frame(1, "b"), end="hang")))
+    on_usage = Failing()
+    client, usages = make_client(gate)
+
+    with pytest.raises(RuntimeError):
+        [f async for f in client.request(prompt=PROMPT, operation="t", on_usage=on_usage).multicall_stream(["a", "b", "m"])]
+
+    # Gate answered b and was still running a and m: an estimate each, as a stream erroring after chunks bills.
+    assert [(u.model, u.estimated) for u in on_usage.seen] == [("b", False), ("a", True), ("m", True)]
+    assert [(u.model, u.estimated) for u in usages.seen if u.estimated] == [("a", True), ("m", True)]
 
 
 async def test_a_multicall_stream_that_ends_fires_each_answer_once() -> None:
