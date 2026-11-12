@@ -49,6 +49,7 @@ from .metering import (
     bears_usage,
     chunk_usage,
     estimated_usage,
+    left_settling,
     settle,
     timed_out_unsent,
 )
@@ -225,10 +226,11 @@ async def select_best[I, R](
     top-priority success short-circuits everything). ``score`` ⇒ the highest-scoring success
     wins, decided once all resolve. ``accept`` short-circuits on the first success it approves.
     Returns ``None`` if nothing succeeds before ``timeout``. Either way it returns only once the
-    runners it cancelled have finished. Pre-sort ``items`` by a per-model weight to get "best
-    weighted model" with early cancellation.
+    runners it cancelled have finished, their usage fired. Pre-sort ``items`` by a per-model
+    weight to get "best weighted model" with early cancellation.
     """
-    tasks: dict[asyncio.Task[R], int] = {asyncio.create_task(runner(item)): i for i, item in enumerate(items)}
+    with left_settling() as settling:
+        tasks: dict[asyncio.Task[R], int] = {asyncio.create_task(runner(item)): i for i, item in enumerate(items)}
     results: dict[int, R] = {}
     pending = set(tasks)
     loop = asyncio.get_running_loop()
@@ -260,8 +262,10 @@ async def select_best[I, R](
     finally:
         for task in pending:
             task.cancel()
-        # A cancelled runner still works on its way out (a call bills its estimate): wait for it, or asyncio.run cuts it off.
+        # A cancelled runner still bills on its way out (its estimate, or Gate's usage it was handing out):
+        # wait for it, or asyncio.run cuts it off.
         await asyncio.gather(*pending, return_exceptions=True)
+        await asyncio.gather(*settling, return_exceptions=True)
 
 
 def _parse_json(text: str, *, loose: bool, repair: bool = False) -> JsonDict | None:
@@ -645,6 +649,12 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         for usage in await asyncio.gather(*(self._estimate(model, call_id, prompt) for model in models)):
             await self._bill(usage)
 
+    async def _bill_answers(self, responses: Sequence[LLMResponse]) -> None:
+        """Bill the answers Gate returned: its usage, a timed-out answer's as a priced estimate of its prompt."""
+        await self._estimate_timeouts(responses)
+        for response in responses:
+            await self._bill(response.usage)
+
     async def _bill_stream(self, meter: StreamMeter, model: str, call_id: UUID) -> None:
         """Bill a streamed dispatch on its way out: the legs Gate reported, else an estimate of every leg."""
         if meter.reported:
@@ -689,9 +699,10 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             raise
         response.usage.call_id = call_id
         self._apply_cast_json(response)
-        if not disable_usage and self.on_usage is not None:
-            await self.on_usage(response.usage)
-        await self._fire(response, disable_usage=disable_usage)
+        if not disable_usage:
+            # Gate answered and billed: its usage lands even if the caller is cancelled while it is handed out.
+            await settle(self._bill(response.usage), quiet=False)
+        await self._fire(response, disable_usage=True)
         return response
 
     async def call(self, model: str, *, priority: int = 0, disable_usage: bool = False) -> ResponseT:
@@ -781,7 +792,8 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
                 async with Closing(stream) as chunks:
                     async for chunk in chunks:
                         if usage_chunks and not disable_usage and bears_usage(chunk):
-                            await self._bill(chunk_usage(chunk, model=model, operation=self.operation, call_id=call_id))
+                            usage = chunk_usage(chunk, model=model, operation=self.operation, call_id=call_id)
+                            await settle(self._bill(usage), quiet=False)
                         yield chunk
                         if client_paces and chunk.text:
                             await asyncio.sleep(smooth_duration_ms / 1000)
@@ -853,13 +865,9 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         for request, response in zip(requests, responses, strict=True):
             response.usage.call_id = request.call_id
             self._apply_cast_json(response)
-        billed = [response for response in responses if response.usage.call_id not in unbilled]
-        await self._estimate_timeouts(billed)
-        if self.on_usage is not None:
-            for response in billed:
-                await self.on_usage(response.usage)
+        await settle(self._bill_answers([r for r in responses if r.usage.call_id not in unbilled]), quiet=False)
         for response in responses:
-            await self._fire(response, disable_usage=response.usage.call_id in unbilled)
+            await self._fire(response, disable_usage=True)
         return [self._finalize(r) for r in responses]
 
     def multicall_sync(
@@ -926,10 +934,8 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
                         unanswered.discard(frame.index)  # its own usage fires now, so no estimate on the way out
                         frame.response.usage.call_id = call_id
                         self._apply_cast_json(frame.response)
-                        await self._estimate_timeouts([frame.response])
-                        if self.on_usage is not None:
-                            await self.on_usage(frame.response.usage)
-                        await self._fire(frame.response)
+                        await settle(self._bill_answers([frame.response]), quiet=False)
+                        await self._fire(frame.response, disable_usage=True)
                         yield frame.index, frame.response
         except BaseException as exc:
             # Left early: the models Gate was still running bill an estimate of their prompt. It ran
@@ -1000,12 +1006,9 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         for response in responses:
             response.usage.call_id = call_id
             self._apply_cast_json(response)
-        await self._estimate_timeouts(responses)
-        if self.on_usage is not None:
-            for response in responses:
-                await self.on_usage(response.usage)
+        await settle(self._bill_answers(responses), quiet=False)
         for response in responses:
-            await self._fire(response)
+            await self._fire(response, disable_usage=True)
         return [self._finalize(r) for r in responses]
 
     async def call_prefer(self, models: list[str], *, priority: int = 0) -> ResponseT:
@@ -1109,9 +1112,8 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             raise
         response.usage.call_id = call_id
         self._apply_cast_json(response)
-        if self.on_usage is not None:
-            await self.on_usage(response.usage)
-        await self._fire(response)
+        await settle(self._bill(response.usage), quiet=False)
+        await self._fire(response, disable_usage=True)
         return self._finalize(response)
 
     async def call_best(

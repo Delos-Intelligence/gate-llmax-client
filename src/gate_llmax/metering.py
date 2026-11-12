@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple, Self
 from uuid import UUID
@@ -321,6 +323,7 @@ class Closing[T]:
 
 
 _SETTLING: set[asyncio.Task[None]] = set()
+_LEFT_SETTLING: ContextVar[list[asyncio.Task[None]] | None] = ContextVar("gate_llmax_left_settling", default=None)
 
 
 async def settle(fire: Coroutine[Any, Any, None], *, quiet: bool) -> None:
@@ -337,11 +340,24 @@ async def settle(fire: Coroutine[Any, Any, None], *, quiet: bool) -> None:
     except asyncio.CancelledError:
         _SETTLING.add(task)
         task.add_done_callback(_settled)
+        if (left := _LEFT_SETTLING.get()) is not None:
+            left.append(task)
         raise
     except Exception:
         if not quiet:
             raise
         logger.exception("A usage callback failed on a dispatch's way out")
+
+
+@contextmanager
+def left_settling() -> Iterator[list[asyncio.Task[None]]]:
+    """Collect the fires that the tasks created inside leave settling when cancelled, for their creator to wait on."""
+    left: list[asyncio.Task[None]] = []
+    token = _LEFT_SETTLING.set(left)
+    try:
+        yield left
+    finally:
+        _LEFT_SETTLING.reset(token)
 
 
 def _settled(task: asyncio.Task[None]) -> None:

@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from functools import partial
 from typing import Any
 from urllib.parse import unquote
@@ -144,6 +144,40 @@ class Usages:
         """The single usage fired; fails the test if it is not exactly one."""
         assert len(self.seen) == 1, self.seen
         return self.seen[0]
+
+
+class SlowOnUsage(Usages):
+    """An ``on_usage`` writing Gate's usage somewhere slow (a database): it awaits before keeping each one."""
+
+    def __init__(self, *models: str, delay: float = 0.05) -> None:
+        """Be slow for ``models`` (every model when none is named), ``delay`` seconds each."""
+        super().__init__()
+        self.models = models
+        self.delay = delay
+        self.entered = asyncio.Event()
+
+    async def __call__(self, usage: RawUsage) -> None:
+        """Wait on Gate's usage, then keep it; keep an estimate at once."""
+        if not usage.estimated and (not self.models or usage.model in self.models):
+            self.entered.set()
+            await asyncio.sleep(self.delay)
+        await super().__call__(usage)
+
+
+async def cancel_once(entered: asyncio.Event, running: Awaitable[Any]) -> None:
+    """Cancel ``running`` once ``entered`` is set, then give the usage it was handing out time to land."""
+    task = asyncio.ensure_future(running)
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0.2)
+
+
+async def drain(chunks: AsyncIterator[Any]) -> None:
+    """Read a stream to its end."""
+    async for _ in chunks:
+        pass
 
 
 def make_client(gate: Gate, **kwargs: Any) -> tuple[LLMClient, Usages]:
@@ -610,6 +644,61 @@ async def test_a_cancelled_buffered_call_fires_an_estimate() -> None:
     assert on_usage.one == usages.one
 
 
+def answer_its_model(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(200, json=answer(json.loads(request.content)["target"]["model"]))
+
+
+# Each buffered entry point, a Gate answering it, and the models whose usage Gate reports.
+ANSWERED: dict[str, tuple[Callable[[Any], Any], Callable[[httpx.Request], Any], list[str]]] = {
+    "call": (lambda builder: builder.call("m"), answer_its_model, ["m"]),
+    "multicall": (lambda builder: builder.multicall(["a", "b"]), answer_its_model, ["a", "b"]),
+    "batch_multicall": (
+        lambda builder: builder.batch_multicall(["a", "b"]),
+        lambda _r: httpx.Response(200, json=[answer("a"), answer("b")]),
+        ["a", "b"],
+    ),
+    "server-side call_best": (
+        lambda builder: builder.call_best(["a", "b"], lowest="price"),
+        lambda _r: httpx.Response(200, json=answer("a")),
+        ["a"],
+    ),
+}
+
+
+@pytest.mark.parametrize("entry", ANSWERED)
+async def test_a_call_cancelled_while_handing_out_gate_s_usage_still_fires_it(entry: str) -> None:
+    send, chat, models = ANSWERED[entry]
+    gate = Gate(chat)
+    on_usage = SlowOnUsage()
+    client, usages = make_client(gate)
+
+    await cancel_once(on_usage.entered, send(client.request(prompt=PROMPT, operation="t", on_usage=on_usage)))
+
+    # Gate answered and billed: its usage reaches every callback once, the caller's cancel notwithstanding.
+    assert [(u.model, u.estimated) for u in usages.seen] == [(model, False) for model in models]
+    assert {u.call_id for u in usages.seen} == set(gate.ids)
+    assert on_usage.seen == usages.seen
+
+
+async def test_a_batch_cancelled_while_pricing_a_timed_out_answer_still_fires_every_answer() -> None:
+    pricing = asyncio.Event()
+
+    async def slow_price(_request: httpx.Request) -> httpx.Response:
+        pricing.set()
+        await asyncio.sleep(0.05)
+        return httpx.Response(200, json=model_info("b", PRICES["b"]))
+
+    timed_out = {"model": "b", "status": "TIMEOUT", "usage": {"model": "b", "estimated": True}}
+    gate = Gate(lambda _r: httpx.Response(200, json=[answer("a"), timed_out]))
+    gate.price_reply = slow_price
+    client, usages = make_client(gate)
+
+    await cancel_once(pricing, client.request(prompt=PROMPT, operation="t").batch_multicall(["a", "b"]))
+
+    assert [(u.model, u.estimated) for u in usages.seen] == [("a", False), ("b", True)]
+    assert_estimate(usages.seen[1], input_tokens=PROMPT_TOKENS, output_tokens=0, price=PRICES["b"])
+
+
 async def test_a_buffered_refusal_fires_nothing() -> None:
     gate = Gate(scripted(httpx.Response(503, json={"detail": "down"})))
     client, usages = make_client(gate)
@@ -713,6 +802,23 @@ def test_call_best_sync_bills_its_cancelled_loser() -> None:
 
     assert response.model == "a"
     assert [(u.model, u.estimated) for u in usages.seen] == [("a", False), ("b", True)]
+
+
+async def test_call_best_bills_gate_s_usage_for_a_loser_cancelled_while_handing_it_out() -> None:
+    async def b_answers_first(request: httpx.Request) -> httpx.Response:
+        if json.loads(request.content)["target"]["model"] == "a":
+            await asyncio.sleep(0.01)
+        return answer_its_model(request)
+
+    gate = Gate(b_answers_first)
+    on_usage = SlowOnUsage("b", delay=0.1)  # still writing b's usage when a wins and b is cancelled
+    client, usages = make_client(gate)
+
+    response = await client.request(prompt=PROMPT, operation="t", on_usage=on_usage).call_best(["a", "b"])
+
+    assert response.model == "a"
+    assert sorted((u.model, u.estimated) for u in usages.seen) == [("a", False), ("b", False)]
+    assert {u.call_id for u in usages.seen} == set(gate.ids)
 
 
 # --- server-side fan-outs: one request, every model under its call id -----------------------------
@@ -852,6 +958,17 @@ async def test_a_cancelled_multicall_stream_estimates_every_model_not_yet_answer
     assert task.cancelled()
     assert [(u.model, u.estimated) for u in usages.seen] == [("a", False), ("b", True)]
     assert_estimate(usages.seen[1], input_tokens=PROMPT_TOKENS, output_tokens=0, price=PRICES["b"])
+
+
+async def test_a_multicall_stream_cancelled_while_handing_out_an_answer_s_usage_still_fires_it() -> None:
+    gate = Gate(scripted(stream(batch_frame(1, "b"), end="hang")))
+    on_usage = SlowOnUsage()
+    client, usages = make_client(gate)
+
+    await cancel_once(on_usage.entered, drain(client.request(prompt=PROMPT, operation="t", on_usage=on_usage).multicall_stream(["a", "b"])))
+
+    # b answered: Gate's usage, landing on its own; a was still running at Gate: its estimate.
+    assert sorted((u.model, u.estimated) for u in usages.seen) == [("a", True), ("b", False)]
 
 
 async def test_a_multicall_stream_cut_by_its_caller_s_timeout_before_any_answer_estimates_every_model() -> None:
@@ -1151,6 +1268,17 @@ async def test_usage_chunks_adds_an_estimate_only_when_gate_reported_nothing() -
 
     await read_then_close(client.request(prompt=PROMPT, operation="t").call_stream("m", usage_chunks=True))
     assert [u.estimated for u in usages.seen] == [False, True]
+
+
+async def test_usage_chunks_cancelled_while_handing_out_gate_s_usage_still_fires_it() -> None:
+    gate = Gate(scripted(stream(text("pong"), sse(frame()), end="hang")))
+    on_usage = SlowOnUsage()
+    client, usages = make_client(gate)
+
+    builder = client.request(prompt=PROMPT, operation="t", on_usage=on_usage)
+    await cancel_once(on_usage.entered, drain(builder.call_stream("m", usage_chunks=True)))
+
+    assert [(u.estimated, u.input_tokens, u.output_tokens) for u in usages.seen] == [(False, 10, 5)]
 
 
 async def test_the_fake_client_reports_its_streams_and_prices_nothing(caplog: pytest.LogCaptureFixture) -> None:
