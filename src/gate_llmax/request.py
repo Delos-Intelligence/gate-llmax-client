@@ -639,9 +639,11 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             finish_reason=finish_reason,
         )
 
-    async def _bill_estimate(self, model: str, call_id: UUID | None, input_tokens: int) -> None:
-        """Bill a dispatch Gate never answered: an estimate of its prompt, no output."""
-        await self._bill(await self._estimate(model, call_id, input_tokens))
+    async def _bill_estimates(self, models: Sequence[str], call_id: UUID) -> None:
+        """Bill a dispatch Gate never answered: an estimate of its prompt, no output, for each of ``models`` it ran."""
+        prompt = estimate_input_tokens(self.system_prompt, self.messages, self.images)
+        for usage in await asyncio.gather(*(self._estimate(model, call_id, prompt) for model in models)):
+            await self._bill(usage)
 
     async def _bill_stream(self, meter: StreamMeter, model: str, call_id: UUID) -> None:
         """Bill a streamed dispatch on its way out: the legs Gate reported, else an estimate of every leg."""
@@ -683,8 +685,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         except (LLMTimeoutError, asyncio.CancelledError, *LOST_AFTER_SEND) as exc:
             # No answer, so no usage from Gate; a request that went out bills its prompt as an estimate.
             if not disable_usage and not timed_out_unsent(exc):
-                prompt = estimate_input_tokens(self.system_prompt, self.messages, self.images)
-                await settle(self._bill_estimate(model, call_id, prompt), quiet=True)
+                await settle(self._bill_estimates([model], call_id), quiet=True)
             raise
         response.usage.call_id = call_id
         self._apply_cast_json(response)
@@ -882,6 +883,9 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
 
         ``on_usage``, when set, fires once per yielded frame with the per-model
         ``RawUsage`` (a priced estimate for timed-out models, also on the frame's response).
+        A stream left before every model answered (the caller stops reading, is cancelled, or the
+        stream times out) bills each model still unanswered an estimate of its prompt, under the
+        stream's call id; one Gate never received or refused bills nothing.
         """
         await self._gate_budget()
         # One request fanned out server-side: every model's answer shares its call id.
@@ -912,15 +916,24 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             seed_routing=self.seed_routing,
             **self._conversation_controls(),
         )
-        with _naming_failures(call_id):
-            async for frame in self.client._stream_batch(request):  # noqa: SLF001
-                frame.response.usage.call_id = call_id
-                self._apply_cast_json(frame.response)
-                await self._estimate_timeouts([frame.response])
-                if self.on_usage is not None:
-                    await self.on_usage(frame.response.usage)
-                await self._fire(frame.response)
-                yield frame.index, frame.response
+        unanswered = set(range(len(models)))
+        try:
+            with _naming_failures(call_id):
+                async with Closing(self.client._stream_batch(request)) as frames:  # noqa: SLF001
+                    async for frame in frames:
+                        unanswered.discard(frame.index)  # its own usage fires now, so no estimate on the way out
+                        frame.response.usage.call_id = call_id
+                        self._apply_cast_json(frame.response)
+                        await self._estimate_timeouts([frame.response])
+                        if self.on_usage is not None:
+                            await self.on_usage(frame.response.usage)
+                        await self._fire(frame.response)
+                        yield frame.index, frame.response
+        except (GeneratorExit, asyncio.CancelledError, LLMTimeoutError) as exc:
+            # Left early: the models Gate was still running bill an estimate of their prompt.
+            if unanswered and not timed_out_unsent(exc):
+                await settle(self._bill_estimates([models[i] for i in sorted(unanswered)], call_id), quiet=True)
+            raise
 
     async def batch_multicall(
         self,
@@ -937,6 +950,10 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         `specifics_by_model` lets you override the shared ``specifics`` per model name —
         useful when bundles mix providers with different ``extra_body`` requirements
         (e.g. Gemini 3 vs Gemini 2.5 thinking-config schemas).
+
+        A batch that times out or is cancelled before Gate answers bills each model an estimate
+        of its prompt under the batch's call id, then re-raises; one Gate never received or
+        refused bills nothing.
         """
         await self._gate_budget()
         # One request fanned out server-side: every model's answer shares its call id.
@@ -966,8 +983,14 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             seed_routing=self.seed_routing,
             **self._conversation_controls(),
         )
-        with _naming_failures(call_id):
-            responses = await self.client._send_batch(batch)  # noqa: SLF001
+        try:
+            with _naming_failures(call_id):
+                responses = await self.client._send_batch(batch)  # noqa: SLF001
+        except (LLMTimeoutError, asyncio.CancelledError) as exc:
+            # No answer, so no usage from Gate; a batch that went out bills every model its prompt as an estimate.
+            if not timed_out_unsent(exc):
+                await settle(self._bill_estimates(models, call_id), quiet=True)
+            raise
         for response in responses:
             response.usage.call_id = call_id
             self._apply_cast_json(response)
@@ -1036,7 +1059,12 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
     async def _call_best_server(
         self, models: list[str], attribute: str, direction: Literal["greatest", "lowest"], timeout: float
     ) -> ResponseT:
-        """Server-side best: one request fans out across `models`, returns the SUCCESS ranked best by `extra_attributes[attribute]`."""
+        """Server-side best: one request fans out across `models`, returns the SUCCESS ranked best by `extra_attributes[attribute]`.
+
+        It bills the one answer it returns. A request that times out or is cancelled before Gate
+        answers bills one estimate of its prompt instead, priced as the first of ``models`` (the
+        winner is unknown), then re-raises; one Gate never received or refused bills nothing.
+        """
         await self._gate_budget()
         call_id = self._next_call_id()
         request = LLMRequest(
@@ -1064,8 +1092,14 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             seed_routing=self.seed_routing,
             **self._conversation_controls(),
         )
-        with _naming_failures(call_id):
-            response = await self.client._send(request)  # noqa: SLF001
+        try:
+            with _naming_failures(call_id):
+                response = await self.client._send(request)  # noqa: SLF001
+        except (LLMTimeoutError, asyncio.CancelledError) as exc:
+            # No answer, so no usage from Gate; a request that went out bills its prompt as an estimate.
+            if not timed_out_unsent(exc):
+                await settle(self._bill_estimates(models[:1], call_id), quiet=True)
+            raise
         response.usage.call_id = call_id
         self._apply_cast_json(response)
         if self.on_usage is not None:
@@ -1598,20 +1632,49 @@ class TTSRequestBuilder(MediaBuilder[BaseAudioResponse]):
         return asyncio.run(self.call(model))
 
     async def call_stream(self, model: str) -> AsyncIterator[bytes]:
-        """Stream raw speech bytes; fire usage (``input_tokens == len(text)``) at completion."""
+        """Stream raw speech bytes; fire the usage on every exit, and the result callbacks at the end.
+
+        Gate's speech stream sends no usage frame and bills the text's characters at the model's
+        input price, so the usage is that estimate (``input_tokens == len(text)``, ``estimated=True``),
+        fired once by every exit of a stream Gate received: the end, the caller stopping
+        (``aclose()``), a cancellation, a timeout, or an error after audio arrived. A stream Gate
+        never received or refused fires nothing.
+        """
         await self._gate_budget()
         call_id = self._next_call_id()
         request = self.request.model_copy(update={"model": model, "call_id": call_id})
-        with _naming_failures(call_id):
-            async for chunk in self.client._stream_tts(request):  # noqa: SLF001
-                yield chunk
-        synth = TTSResponse(
-            model=request.model,
-            audio="",
-            response_format=request.response_format,
-            usage=RawUsage(input_tokens=len(request.text), model=request.model, call_id=call_id),
+        delivered = False
+        error: BaseException | None = None
+        try:
+            with _naming_failures(call_id):
+                async with Closing(self.client._stream_tts(request)) as audio:  # noqa: SLF001
+                    async for chunk in audio:
+                        delivered = True
+                        yield chunk
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            if _speech_owes_usage(error, delivered=delivered):
+                await settle(self._bill_speech(request, call_id, finished=error is None), quiet=error is not None)
+
+    async def _bill_speech(self, request: TTSRequest, call_id: UUID, *, finished: bool) -> None:
+        """Fire a speech stream's estimate; a ``finished`` stream also hands its result to the callbacks."""
+        price = await self.client._list_price(request.model, request.plan)  # noqa: SLF001
+        usage = estimated_usage(
+            price, model=request.model, input_tokens=len(request.text), output_tokens=0, operation=request.operation, call_id=call_id
         )
-        await self._fire(synth)
+        if not finished:
+            await self._fire_usage(usage)
+            return
+        await self._fire(TTSResponse(model=request.model, audio="", response_format=request.response_format, usage=usage))
+
+
+def _speech_owes_usage(error: BaseException | None, *, delivered: bool) -> bool:
+    """Whether a speech stream leaving with ``error`` (``None`` for its end) owes a usage: Gate received it and did not refuse it."""
+    if isinstance(error, LLMTimeoutError):
+        return not timed_out_unsent(error)
+    return error is None or isinstance(error, (GeneratorExit, asyncio.CancelledError)) or delivered
 
 
 class AudioGenRequestBuilder(MediaBuilder[BaseAudioResponse]):

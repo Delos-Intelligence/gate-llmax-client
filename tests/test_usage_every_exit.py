@@ -63,7 +63,7 @@ def text(value: str) -> bytes:
 
 
 class Scripted(httpx.AsyncByteStream):
-    """Replays ``chunks``, then ends (``[DONE]``), drops the connection, or hangs until cancelled."""
+    """Replays ``chunks``, then ends (``[DONE]``), drops the connection, times out, or hangs until cancelled."""
 
     def __init__(self, chunks: list[bytes], end: str) -> None:
         """Hold the bytes and how the stream ends."""
@@ -77,6 +77,9 @@ class Scripted(httpx.AsyncByteStream):
         if self.end == "drop":
             msg = "connection dropped"
             raise httpx.ReadError(msg)
+        if self.end == "timeout":
+            msg = "read timed out"
+            raise httpx.ReadTimeout(msg)
         if self.end == "hang":
             await asyncio.sleep(3600)
         yield b"data: [DONE]\n\n"
@@ -364,6 +367,11 @@ async def test_a_stream_timing_out_fires_a_priced_estimate_and_raises() -> None:
 def refuse(error: type[httpx.TransportError] = httpx.ConnectError) -> httpx.Response:
     msg = "refused"
     raise error(msg)
+
+
+def time_out() -> httpx.Response:
+    msg = "Gate received the request but has not answered"
+    raise httpx.ReadTimeout(msg)
 
 
 # Each way httpx fails before a request leaves the client, and the error the caller gets for it.
@@ -695,6 +703,277 @@ def test_call_best_sync_bills_its_cancelled_loser() -> None:
 
     assert response.model == "a"
     assert [(u.model, u.estimated) for u in usages.seen] == [("a", False), ("b", True)]
+
+
+# --- server-side fan-outs: one request, every model under its call id -----------------------------
+
+# Each fan-out sent as one Gate request, and the models it bills an estimate for when Gate never
+# answers: call_best's one answer, priced as its first model (the winner is unknown); one per model for a batch.
+FAN_OUTS: dict[str, tuple[Callable[[Any], Any], list[str]]] = {
+    "call_best": (lambda builder: builder.call_best(["a", "b"], lowest="price"), ["a"]),
+    "batch_multicall": (lambda builder: builder.batch_multicall(["a", "b"]), ["a", "b"]),
+}
+
+
+@pytest.mark.parametrize("fan_out", FAN_OUTS)
+async def test_a_fan_out_timing_out_fires_a_priced_estimate_per_model_billed(fan_out: str) -> None:
+    send, billed = FAN_OUTS[fan_out]
+    gate = Gate(scripted(time_out))
+    on_usage = Usages()
+    client, usages = make_client(gate)
+
+    with pytest.raises(LLMTimeoutError) as raised:
+        await send(client.request(prompt=PROMPT, operation="t", on_usage=on_usage))
+
+    assert [u.model for u in usages.seen] == billed
+    for usage in usages.seen:
+        assert_estimate(usage, input_tokens=PROMPT_TOKENS, output_tokens=0, price=PRICES[usage.model])
+        assert usage.call_id == raised.value.call_id == gate.ids[0]
+    assert on_usage.seen == usages.seen
+
+
+@pytest.mark.parametrize("fan_out", FAN_OUTS)
+async def test_a_cancelled_fan_out_fires_a_priced_estimate_per_model_billed(fan_out: str) -> None:
+    async def never() -> httpx.Response:
+        await asyncio.sleep(3600)
+        raise AssertionError
+
+    send, billed = FAN_OUTS[fan_out]
+    gate = Gate(scripted(never))
+    client, usages = make_client(gate)
+
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.05):
+            await send(client.request(prompt=PROMPT, operation="t"))
+
+    assert [u.model for u in usages.seen] == billed
+    for usage in usages.seen:
+        assert_estimate(usage, input_tokens=PROMPT_TOKENS, output_tokens=0, price=PRICES[usage.model])
+        assert usage.call_id == gate.ids[0]
+
+
+@pytest.mark.parametrize("fan_out", FAN_OUTS)
+@pytest.mark.parametrize("error", UNSENT, ids=lambda error: error.__name__)
+async def test_a_fan_out_gate_never_received_fires_nothing(fan_out: str, error: type[httpx.TransportError]) -> None:
+    send, _billed = FAN_OUTS[fan_out]
+    gate = Gate(scripted(partial(refuse, error)))
+    client, usages = make_client(gate)
+
+    with pytest.raises(UNSENT[error]):
+        await send(client.request(prompt=PROMPT, operation="t"))
+
+    assert usages.seen == []
+    assert gate.lookups == []
+
+
+@pytest.mark.parametrize("fan_out", FAN_OUTS)
+@pytest.mark.parametrize("status", [404, 503])
+async def test_a_refused_fan_out_fires_nothing(fan_out: str, status: int) -> None:
+    send, _billed = FAN_OUTS[fan_out]
+    gate = Gate(scripted(httpx.Response(status, json={"detail": "no"})))
+    client, usages = make_client(gate)
+
+    with pytest.raises((LLMModelNotFoundError, LLMServerError)):
+        await send(client.request(prompt=PROMPT, operation="t"))
+
+    assert usages.seen == []
+
+
+def batch_frame(index: int, model: str) -> bytes:
+    """One model's answer on a streamed fan-out, with the usage Gate reported for it."""
+    return sse({"index": index, "model": model, "response": answer(model)})
+
+
+async def test_a_multicall_stream_its_caller_leaves_estimates_every_model_not_yet_answered() -> None:
+    gate = Gate(scripted(stream(batch_frame(1, "b"), end="hang")))
+    on_usage = Usages()
+    client, usages = make_client(gate)
+
+    await read_then_close(client.request(prompt=PROMPT, operation="t", on_usage=on_usage).multicall_stream(["a", "b", "m"]))
+
+    # b answered with Gate's usage; a and m were still running at Gate: a priced estimate each, under the one call id.
+    assert [(u.model, u.estimated) for u in usages.seen] == [("b", False), ("a", True), ("m", True)]
+    for usage in usages.seen[1:]:
+        assert_estimate(usage, input_tokens=PROMPT_TOKENS, output_tokens=0, price=PRICES[usage.model])
+    assert {u.call_id for u in usages.seen} == {gate.ids[0]}
+    assert on_usage.seen == usages.seen
+
+
+async def test_a_cancelled_multicall_stream_estimates_every_model_not_yet_answered() -> None:
+    gate = Gate(scripted(stream(batch_frame(0, "a"), end="hang")))
+    client, usages = make_client(gate)
+    started = asyncio.Event()
+
+    async def consume() -> None:
+        async for _ in client.request(prompt=PROMPT, operation="t").multicall_stream(["a", "b"]):
+            started.set()
+
+    task = asyncio.create_task(consume())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert task.cancelled()
+    assert [(u.model, u.estimated) for u in usages.seen] == [("a", False), ("b", True)]
+    assert_estimate(usages.seen[1], input_tokens=PROMPT_TOKENS, output_tokens=0, price=PRICES["b"])
+
+
+async def test_a_multicall_stream_cut_by_its_caller_s_timeout_before_any_answer_estimates_every_model() -> None:
+    gate = Gate(scripted(stream(end="hang")))
+    client, usages = make_client(gate)
+
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.05):
+            [f async for f in client.request(prompt=PROMPT, operation="t").multicall_stream(["a", "b"])]
+
+    assert [(u.model, u.estimated) for u in usages.seen] == [("a", True), ("b", True)]
+
+
+async def test_a_multicall_stream_timing_out_estimates_every_model_not_yet_answered() -> None:
+    gate = Gate(scripted(stream(batch_frame(0, "a"), end="timeout")))
+    client, usages = make_client(gate)
+
+    with pytest.raises(LLMTimeoutError):
+        [f async for f in client.request(prompt=PROMPT, operation="t").multicall_stream(["a", "b"])]
+
+    assert [(u.model, u.estimated) for u in usages.seen] == [("a", False), ("b", True)]
+    assert usages.seen[1].call_id == gate.ids[0]
+
+
+async def test_a_multicall_stream_that_ends_fires_each_answer_once() -> None:
+    gate = Gate(scripted(stream(batch_frame(1, "b"), batch_frame(0, "a"))))
+    client, usages = make_client(gate)
+
+    [f async for f in client.request(prompt=PROMPT, operation="t").multicall_stream(["a", "b"])]
+
+    assert [(u.model, u.estimated) for u in usages.seen] == [("b", False), ("a", False)]
+
+
+@pytest.mark.parametrize("error", UNSENT, ids=lambda error: error.__name__)
+async def test_a_multicall_stream_gate_never_received_fires_nothing(error: type[httpx.TransportError]) -> None:
+    gate = Gate(scripted(partial(refuse, error)))
+    client, usages = make_client(gate)
+
+    with pytest.raises(UNSENT[error]):
+        [f async for f in client.request(prompt=PROMPT, operation="t").multicall_stream(["a", "b"])]
+
+    assert usages.seen == []
+    assert gate.lookups == []
+
+
+@pytest.mark.parametrize("status", [404, 503])
+async def test_a_refused_multicall_stream_fires_nothing(status: int) -> None:
+    gate = Gate(scripted(httpx.Response(status, json={"detail": "no"})))
+    client, usages = make_client(gate)
+
+    with pytest.raises((LLMModelNotFoundError, LLMServerError)):
+        [f async for f in client.request(prompt=PROMPT, operation="t").multicall_stream(["a", "b"])]
+
+    assert usages.seen == []
+
+
+# --- the speech stream: Gate bills the text's characters, and sends no usage frame ----------------
+
+SPEECH = "Hello world"
+
+
+def speech(*chunks: bytes, end: str) -> httpx.Response:
+    return httpx.Response(200, headers={"content-type": "audio/mpeg"}, stream=Scripted(list(chunks), end))
+
+
+def assert_speech_estimate(usage: RawUsage) -> None:
+    assert_estimate(usage, input_tokens=len(SPEECH), output_tokens=0, price=PRICES["m"])
+
+
+async def test_a_completed_speech_stream_fires_a_priced_estimate_of_its_text() -> None:
+    gate = Gate(scripted(httpx.Response(200, content=b"ID3\xff\xfb")))
+    client, usages = make_client(gate)
+    responses: list[Any] = []
+
+    async def keep(response: Any) -> None:
+        responses.append(response)
+
+    audio = [c async for c in client.audio("speech", text=SPEECH, operation="t").callback(keep).call_stream("m")]
+
+    assert audio == [b"ID3\xff\xfb"]
+    assert_speech_estimate(usages.one)
+    assert usages.one.call_id == gate.ids[0]
+    assert [r.usage for r in responses] == [usages.one]  # the response callbacks still get the finished stream
+
+
+async def test_a_speech_stream_its_caller_leaves_fires_one_estimate() -> None:
+    gate = Gate(scripted(speech(b"ID3", end="hang")))
+    client, usages = make_client(gate)
+
+    await read_then_close(client.audio("speech", text=SPEECH, operation="t").call_stream("m"))
+
+    assert_speech_estimate(usages.one)
+    assert usages.one.call_id == gate.ids[0]
+
+
+async def test_a_cancelled_speech_stream_fires_one_estimate() -> None:
+    gate = Gate(scripted(speech(b"ID3", end="hang")))
+    client, usages = make_client(gate)
+    started = asyncio.Event()
+
+    async def consume() -> None:
+        async for _ in client.audio("speech", text=SPEECH, operation="t").call_stream("m"):
+            started.set()
+
+    task = asyncio.create_task(consume())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert task.cancelled()
+    assert_speech_estimate(usages.one)
+
+
+@pytest.mark.parametrize("reply", [time_out, lambda: speech(b"ID3", end="timeout")], ids=["before-the-audio", "after-some-audio"])
+async def test_a_speech_stream_timing_out_fires_one_estimate_and_raises(reply: Callable[[], httpx.Response]) -> None:
+    gate = Gate(scripted(reply))
+    client, usages = make_client(gate)
+
+    with pytest.raises(LLMTimeoutError) as raised:
+        [c async for c in client.audio("speech", text=SPEECH, operation="t").call_stream("m")]
+
+    assert_speech_estimate(usages.one)
+    assert usages.one.call_id == raised.value.call_id == gate.ids[0]
+
+
+async def test_a_speech_stream_failing_after_audio_fires_one_estimate_and_raises() -> None:
+    gate = Gate(scripted(speech(b"ID3", end="drop")))
+    client, usages = make_client(gate)
+
+    with pytest.raises(httpx.ReadError):
+        [c async for c in client.audio("speech", text=SPEECH, operation="t").call_stream("m")]
+
+    assert_speech_estimate(usages.one)
+
+
+@pytest.mark.parametrize("error", UNSENT, ids=lambda error: error.__name__)
+async def test_a_speech_stream_gate_never_received_fires_nothing(error: type[httpx.TransportError]) -> None:
+    gate = Gate(scripted(partial(refuse, error)))
+    client, usages = make_client(gate)
+
+    with pytest.raises(UNSENT[error]):
+        [c async for c in client.audio("speech", text=SPEECH, operation="t").call_stream("m")]
+
+    assert usages.seen == []
+    assert gate.lookups == []
+
+
+@pytest.mark.parametrize("status", [404, 503])
+async def test_a_refused_speech_stream_fires_nothing(status: int) -> None:
+    gate = Gate(scripted(httpx.Response(status, json={"detail": "no"})))
+    client, usages = make_client(gate)
+
+    with pytest.raises((LLMModelNotFoundError, LLMServerError)):
+        [c async for c in client.audio("speech", text=SPEECH, operation="t").call_stream("m")]
+
+    assert usages.seen == []
 
 
 # --- the list price -------------------------------------------------------------------------------
