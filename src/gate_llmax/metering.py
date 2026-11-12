@@ -166,6 +166,7 @@ class Leg:
     prefix: str  # text delivered before this leg, sent back to the model as an assistant turn to continue
     output: list[str] = field(default_factory=list)  # what this leg delivered: text, reasoning, tool-call deltas
     report: StreamChunk | None = None  # Gate's usage frame for this leg; cumulative, so a later one replaces it
+    chunks: int = 0  # how many chunks this leg delivered
 
 
 class StreamMeter:
@@ -187,10 +188,16 @@ class StreamMeter:
         """The current leg could not connect: Gate never received it, so it is no leg at all."""
         self.legs.pop()
 
+    def refused(self) -> None:
+        """The current leg ended on an error status or frame: before any chunk, Gate refused it and billed nothing, so it is no leg."""
+        if not self.legs[-1].chunks:
+            self.legs.pop()
+
     def observe(self, chunk: StreamChunk) -> None:
         """Record one chunk of the current leg on its way to the caller."""
         leg = self.legs[-1]
         self.chunks += 1
+        leg.chunks += 1
         leg.output.extend(part for part in (chunk.text, chunk.reasoning) if part)
         for delta in chunk.tool_calls_delta or []:
             function = delta.get("function")
@@ -212,8 +219,9 @@ class StreamMeter:
 
         It does once a request reached Gate, unless Gate refused it before any chunk: a refusal
         fires nothing, while a timeout, a cancellation or a caller who stopped reading leave a
-        request that ran. A leg that could not connect was dropped (``unsent``), so a dispatch Gate
-        never received owes nothing, and one whose resume could not connect owes its earlier legs.
+        request that ran. A leg that could not connect, or that Gate refused before any chunk, was
+        dropped (``unsent``, ``refused``), so a dispatch Gate never received owes nothing, and one whose
+        resume could not connect or was refused owes its earlier legs.
         """
         if not self.legs:
             return False

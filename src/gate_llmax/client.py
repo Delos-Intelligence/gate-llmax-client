@@ -1847,6 +1847,11 @@ class LLMClient:
                 except httpx.ConnectError as exc:
                     meter.unsent()
                     raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
+                except (LLMError, httpx.HTTPStatusError) as exc:
+                    # An error status or frame; a timeout is Gate running the leg, not refusing it.
+                    if not isinstance(exc, LLMTimeoutError):
+                        meter.refused()
+                    raise
                 except TRANSIENT_STREAM_ERRORS as exc:
                     # A half-streamed tool call has truncated arguments; re-asking would emit
                     # a second call the caller would merge into the first.

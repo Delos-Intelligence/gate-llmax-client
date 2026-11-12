@@ -388,6 +388,27 @@ async def test_a_resume_that_cannot_connect_fires_the_legs_sent(error: type[http
     assert usages.one.call_id == gate.ids[0] == gate.ids[1]
 
 
+@pytest.mark.parametrize(
+    ("refusal", "raised"),
+    [
+        (lambda: httpx.Response(429, json={"detail": "rate limited"}), httpx.HTTPStatusError),
+        (lambda: httpx.Response(503, json={"detail": "no route"}), LLMServerError),
+        (lambda: stream(sse({"error": {"message": "no", "code": 502}})), LLMServerError),
+    ],
+    ids=["429", "503", "error-frame"],
+)
+async def test_a_refused_resume_fires_the_legs_gate_served(refusal: Callable[[], httpx.Response], raised: type[Exception]) -> None:
+    gate = Gate(scripted(stream(text("Roses are "), end="drop"), refusal))
+    client, usages = make_client(gate)
+
+    with pytest.raises(raised):
+        [c async for c in client.request(prompt=PROMPT, operation="t").call_stream("m")]
+
+    # Gate refused the resume before any chunk, so served (and billed) nothing for it: the first leg only.
+    assert len(gate.ids) == 2
+    assert_estimate(usages.one, input_tokens=PROMPT_TOKENS, output_tokens=count_text("Roses are "), price=PRICES["m"])
+
+
 async def test_a_resume_that_cannot_connect_fires_what_gate_reported_for_the_legs_sent() -> None:
     gate = Gate(scripted(stream(text("Roses are "), sse(frame(10, 4)), end="drop"), refuse))
     client, usages = make_client(gate)
