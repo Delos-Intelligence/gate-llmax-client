@@ -30,9 +30,9 @@ PRICE_WAIT = 2.0  # longest an exit waits for a list price; past it the estimate
 PRICE_TTL = 300.0  # how long a list price is reused
 PRICE_RETRY = 60.0  # how long a failed lookup stands before an exit asks Gate again
 _CHARS_PER_TOKEN = 4
-# httpx timeouts raised before a request leaves the client (connecting, waiting for a pooled
-# connection): like a refused connection, Gate never received it.
-UNSENT_TIMEOUTS = (httpx.ConnectTimeout, httpx.PoolTimeout)
+# httpx timeouts raised before a request leaves the client whole (connecting, waiting for a pooled
+# connection, writing the body): like a refused connection, Gate never received it.
+UNSENT_TIMEOUTS = (httpx.ConnectTimeout, httpx.PoolTimeout, httpx.WriteTimeout)
 # httpx errors reading the answer to a buffered request (reset, server gone): Gate received it.
 LOST_AFTER_SEND = (httpx.ReadError, httpx.RemoteProtocolError)
 
@@ -290,6 +290,10 @@ async def _one_leg(stream: AsyncIterator[StreamChunk], meter: StreamMeter) -> As
             yield chunk
     except LLMConnectionError:
         meter.unsent()
+        raise
+    except LLMTimeoutError as exc:
+        if timed_out_unsent(exc):
+            meter.unsent()
         raise
     finally:
         await aclose(stream)

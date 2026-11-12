@@ -27,6 +27,7 @@ from gate_llmax import (
     LLMTimeoutError,
     Message,
     RawUsage,
+    StreamChunk,
 )
 from gate_llmax.client import STREAM_INTERRUPTED
 from gate_llmax.fake import FakeClient
@@ -413,11 +414,12 @@ def time_out() -> httpx.Response:
     raise httpx.ReadTimeout(msg)
 
 
-# Each way httpx fails before a request leaves the client, and the error the caller gets for it.
+# Each way httpx fails before a request leaves the client whole, and the error the caller gets for it.
 UNSENT: dict[type[httpx.TransportError], type[Exception]] = {
     httpx.ConnectError: LLMConnectionError,
     httpx.ConnectTimeout: LLMTimeoutError,
     httpx.PoolTimeout: LLMTimeoutError,
+    httpx.WriteTimeout: LLMTimeoutError,
 }
 
 
@@ -425,6 +427,28 @@ UNSENT: dict[type[httpx.TransportError], type[Exception]] = {
 async def test_a_stream_gate_never_received_fires_nothing(error: type[httpx.TransportError]) -> None:
     gate = Gate(scripted(partial(refuse, error)))
     client, usages = make_client(gate)
+
+    with pytest.raises(UNSENT[error]):
+        [c async for c in client.request(prompt=PROMPT, operation="t").call_stream("m")]
+
+    assert usages.seen == []
+    assert gate.lookups == []
+
+
+class WrappedStream(LLMClient):
+    """A subclass whose ``_stream`` wraps the client's own, so the builder meters it as one leg."""
+
+    async def _stream(self, request: Any, *, priority: int = 0) -> AsyncIterator[StreamChunk]:
+        async for chunk in super()._stream(request, priority=priority):
+            yield chunk
+
+
+@pytest.mark.parametrize("error", UNSENT, ids=lambda error: error.__name__)
+async def test_an_overridden_stream_gate_never_received_fires_nothing(error: type[httpx.TransportError]) -> None:
+    gate = Gate(scripted(partial(refuse, error)))
+    usages = Usages()
+    http = httpx.AsyncClient(base_url=BASE_URL, transport=httpx.MockTransport(gate))
+    client = WrappedStream(api_key="k", base_url=BASE_URL, httpx_aclient=http, usage_callback=usages)
 
     with pytest.raises(UNSENT[error]):
         [c async for c in client.request(prompt=PROMPT, operation="t").call_stream("m")]
