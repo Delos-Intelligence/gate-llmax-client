@@ -9,6 +9,8 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
+import pytest
+
 import gate_llmax.client as client_mod
 from gate_llmax import LLMClient, ToolProgress, ToolResult, ToolStreamItem
 from gate_llmax.models.messages import ImageMessage, TextMessage
@@ -124,3 +126,19 @@ def test_added_tools_are_offered_from_the_next_turn(monkeypatch: Any) -> None:
 
     assert offered == [["search"], ["search", "get_contacts"]]
     assert [tool["function"]["name"] for tool in builder.tools] == ["search"]
+
+
+def test_a_raising_executor_surfaces_its_error(monkeypatch: Any) -> None:
+    """An executor that raises ends the stream with its error, instead of leaving the loop waiting for it forever."""
+    monkeypatch.setattr(client_mod.LLMClient, "_stream", _scripted_stream())
+
+    async def executor(tool_id: str, name: str, args: dict) -> AsyncIterator[ToolStreamItem]:  # noqa: ARG001
+        raise RuntimeError("tool blew up")
+        yield  # an async generator, like every streaming executor
+
+    client = LLMClient(api_key="k", base_url="http://x")
+    builder = client.request(prompt="hi", operation="test_streaming_tools").with_tools(
+        [{"type": "function", "function": {"name": "search"}}], stream_executor=executor
+    )
+    with pytest.raises(RuntimeError, match="tool blew up"):
+        asyncio.run(asyncio.wait_for(_collect(builder), timeout=2))

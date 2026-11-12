@@ -162,12 +162,15 @@ async def _drain_streaming_tool(
 ) -> None:
     """Run one streaming tool, pushing each item to ``queue``; a trailing ``None`` signals done."""
     try:
-        args = json.loads(tool_call.function.arguments or "{}")
-    except json.JSONDecodeError:
-        args = {}
-    async for item in executor(tool_call.id, tool_call.function.name, args):
-        await queue.put((tool_call, item))
-    await queue.put((tool_call, None))
+        try:
+            args = json.loads(tool_call.function.arguments or "{}")
+        except json.JSONDecodeError:
+            args = {}
+        async for item in executor(tool_call.id, tool_call.function.name, args):
+            await queue.put((tool_call, item))
+    finally:
+        # Also when the executor raises: the loop waits for every ``None``, then its gather re-raises.
+        queue.put_nowait((tool_call, None))
 
 
 def _tool_schema_name(tool: Mapping[str, Any]) -> str | None:
