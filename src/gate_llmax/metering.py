@@ -109,6 +109,7 @@ def chunk_usage(chunk: StreamChunk, *, model: str, operation: str, call_id: UUID
         input_tokens=chunk.input_tokens or 0,
         output_tokens=chunk.output_tokens or 0,
         cached_input_tokens=chunk.cached_input_tokens or 0,
+        reasoning_tokens=chunk.reasoning_tokens or 0,
         input_cost=chunk.input_cost or 0.0,
         output_cost=chunk.output_cost or 0.0,
         cached_input_cost=chunk.cached_input_cost or 0.0,

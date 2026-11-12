@@ -204,6 +204,17 @@ async def test_a_completed_stream_fires_gate_s_usage_once() -> None:
     assert gate.lookups == []  # Gate reported, so no price is needed
 
 
+@pytest.mark.parametrize("usage_chunks", [False, True])
+async def test_a_stream_s_usage_keeps_gate_s_reasoning_tokens(usage_chunks: bool) -> None:
+    """As a buffered call's does: the end fire and each ``usage_chunks`` fire carry the reasoning tokens Gate reported."""
+    gate = Gate(scripted(stream(text("pong"), sse(frame(10, 5, reasoning_tokens=3)))))
+    client, usages = make_client(gate)
+
+    [c async for c in client.request(prompt=PROMPT, operation="t").call_stream("m", usage_chunks=usage_chunks)]
+
+    assert usages.one.reasoning_tokens == 3
+
+
 async def test_a_stream_ending_without_usage_fires_a_priced_estimate() -> None:
     gate = Gate(scripted(stream(text("pong"))))
     client, usages = make_client(gate)
