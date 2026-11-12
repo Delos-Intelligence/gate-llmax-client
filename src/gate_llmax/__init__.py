@@ -2,6 +2,7 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
+from gate_llmax.ids import CALL_ID_HEADER, new_call_id
 from gate_llmax.models.audio import AudioRequest, AudioResponse, TranscriptionSegment
 from gate_llmax.models.audio_gen import AudioGenMode, AudioGenRequest, AudioGenResponse, AudioMode, DialogueTurn
 from gate_llmax.models.audio_isolation import AudioIsolationRequest, AudioIsolationResponse
@@ -135,6 +136,7 @@ except PackageNotFoundError:  # running from a source tree without an install
     __version__ = "0.0.0+unknown"
 
 __all__ = [
+    "CALL_ID_HEADER",
     "AudioCallback",
     "AudioGenMode",
     "AudioGenRequest",
@@ -281,5 +283,6 @@ __all__ = [
     "__version__",
     "count",
     "estimate_input_tokens",
+    "new_call_id",
     "select_best",
 ]

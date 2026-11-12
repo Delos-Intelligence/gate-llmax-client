@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar, cast, get_origin, overload
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
+from gate_llmax.ids import new_call_id
 from gate_llmax.models.audio_gen import AudioGenRequest
 from gate_llmax.models.images import ImageData, ImageRequest, ImageResponse
 from gate_llmax.models.messages import ImageMessage, Message, TextMessage
@@ -33,6 +36,7 @@ from gate_llmax.types import JsonDict, OutputStatus
 from .exceptions import (
     LLMBudgetError,
     LLMConnectionError,
+    LLMError,
     LLMModelNotFoundError,
     LLMServerError,
     LLMTimeoutError,
@@ -170,6 +174,17 @@ def _unoffered_tools(offered: list[dict[str, Any]], added: list[dict[str, Any]])
     return fresh
 
 
+@contextmanager
+def _naming_failures(call_id: UUID) -> Iterator[None]:
+    """Stamp a dispatch's call id on the ``LLMError`` it raises, so whoever catches it knows which Gate request failed."""
+    try:
+        yield
+    except LLMError as exc:
+        if exc.call_id is None:
+            exc.call_id = call_id
+        raise
+
+
 def first_ready_success[R](results: dict[int, R], is_success: Callable[[R], bool]) -> tuple[int, R] | None:
     """Earliest index whose contiguous-from-0 prefix is fully resolved and holds a success."""
     i = 0
@@ -293,6 +308,8 @@ class MediaBuilder[ResponseT: LLMCallRecord](BaseModel):
     callbacks: list[Callable[[ResponseT], Awaitable[None]]] = Field(default_factory=list)
     usage_callbacks: list[UsageCallback] = Field(default_factory=list)
     budget_check: BudgetCheck | None = None
+    # The caller's own id for the next dispatch (``with_call_id``); taken by it, so the ones after mint their own.
+    call_id: UUID | None = None
 
     def callback(self, *callbacks: Callable[[ResponseT], Awaitable[None]]) -> Self:
         """Register async callbacks fired with the full response (awaited in order)."""
@@ -308,6 +325,24 @@ class MediaBuilder[ResponseT: LLMCallRecord](BaseModel):
         """Register a pre-call budget gate; a False result denies the call with ``LLMBudgetError``."""
         self.budget_check = check
         return self
+
+    def with_call_id(self, call_id: UUID) -> Self:
+        """Send the next dispatch to Gate as ``call_id`` instead of a fresh UUIDv7; the dispatches after it mint their own.
+
+        A dispatch is one Gate request: a tool loop's turns, ``multicall``'s models and ``call_prefer``'s
+        attempts are each their own, so only the first of them takes this id.
+        """
+        self.call_id = call_id
+        return self
+
+    def _take_call_id(self) -> UUID | None:
+        """Hand the caller's ``with_call_id`` id over once — to a dispatch, or to the builder copy about to make it."""
+        call_id, self.call_id = self.call_id, None
+        return call_id
+
+    def _next_call_id(self) -> UUID:
+        """The call id of the dispatch about to go out: the caller's own, once, else a fresh UUIDv7 minted now."""
+        return self._take_call_id() or new_call_id()
 
     async def _gate_budget(self) -> None:
         if self.budget_check is not None and not await self.budget_check():
@@ -525,6 +560,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         when nothing parses.
         """
         builder = CastedRequestBuilder[Any].model_construct(**self.__dict__, model_type=model_type)
+        builder.call_id = self._take_call_id()  # the copy is what dispatches now, so the caller's id moves to it
         if builder.response_format is None:
             builder.response_format = {"type": "json_object"}
         return builder
@@ -542,6 +578,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         models that emit slightly malformed JSON.
         """
         builder = JsonRequestBuilder[JsonLLMResponse].model_construct(**self.__dict__)
+        builder.call_id = self._take_call_id()  # the copy is what dispatches now, so the caller's id moves to it
         builder.cast_json_enabled = True
         builder.loose_edges = loose_edges
         builder.repair = repair
@@ -560,8 +597,11 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         response callbacks still fire.
         """
         await self._gate_budget()
-        request = self._build_request(model, stream=False)
-        response = await self.client._send(request, priority=priority)  # noqa: SLF001
+        call_id = self._next_call_id()
+        request = self._build_request(model, stream=False, call_id=call_id)
+        with _naming_failures(call_id):
+            response = await self.client._send(request, priority=priority)  # noqa: SLF001
+        response.usage.call_id = call_id
         self._apply_cast_json(response)
         if not disable_usage and self.on_usage is not None:
             await self.on_usage(response.usage)
@@ -627,49 +667,53 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             return
         await self._gate_budget()
         server_paces = smooth and server_side
+        call_id = self._next_call_id()
         request = self._build_request(
             model,
             stream=True,
+            call_id=call_id,
             smooth_server_side=server_paces,
             smooth_duration_ms=smooth_duration_ms if smooth else 0,
         )
         client_paces = smooth and not server_side
         final_usage: RawUsage | None = None
-        try:
-            async for chunk in self.client._stream(request, priority=priority):  # noqa: SLF001
-                if chunk.input_tokens is not None or chunk.output_tokens is not None or chunk.api_provider is not None:
-                    final_usage = RawUsage(
-                        input_tokens=chunk.input_tokens or 0,
-                        output_tokens=chunk.output_tokens or 0,
-                        cached_input_tokens=chunk.cached_input_tokens or 0,
-                        input_cost=chunk.input_cost or 0.0,
-                        output_cost=chunk.output_cost or 0.0,
-                        cached_input_cost=chunk.cached_input_cost or 0.0,
-                        model=model,
-                        api_provider=chunk.api_provider or "",
-                        hosting_provider=chunk.hosting_provider or "",
-                        region=chunk.region or "",
-                        duration_ms=chunk.duration_ms or 0,
-                        ttft_ms=chunk.ttft_ms,
-                        operation=self.operation,
-                    )
-                    if usage_chunks and not disable_usage:
-                        if self.on_usage is not None:
-                            await self.on_usage(final_usage)
-                        await self._fire_usage(final_usage)
-                yield chunk
-                if client_paces and chunk.text:
-                    await asyncio.sleep(smooth_duration_ms / 1000)
-        except (LLMTimeoutError, LLMConnectionError):
-            estimated = estimate_input_tokens(self.system_prompt, self.messages, self.images)
-            usage = RawUsage(model=model, input_tokens=estimated, estimated=True, operation=self.operation)
-            if not disable_usage:
-                if self.on_usage is not None:
-                    await self.on_usage(usage)
-                await self._fire_usage(usage)
-            raise
+        with _naming_failures(call_id):
+            try:
+                async for chunk in self.client._stream(request, priority=priority):  # noqa: SLF001
+                    if chunk.input_tokens is not None or chunk.output_tokens is not None or chunk.api_provider is not None:
+                        final_usage = RawUsage(
+                            input_tokens=chunk.input_tokens or 0,
+                            output_tokens=chunk.output_tokens or 0,
+                            cached_input_tokens=chunk.cached_input_tokens or 0,
+                            input_cost=chunk.input_cost or 0.0,
+                            output_cost=chunk.output_cost or 0.0,
+                            cached_input_cost=chunk.cached_input_cost or 0.0,
+                            model=model,
+                            api_provider=chunk.api_provider or "",
+                            hosting_provider=chunk.hosting_provider or "",
+                            region=chunk.region or "",
+                            duration_ms=chunk.duration_ms or 0,
+                            ttft_ms=chunk.ttft_ms,
+                            operation=self.operation,
+                            call_id=call_id,
+                        )
+                        if usage_chunks and not disable_usage:
+                            if self.on_usage is not None:
+                                await self.on_usage(final_usage)
+                            await self._fire_usage(final_usage)
+                    yield chunk
+                    if client_paces and chunk.text:
+                        await asyncio.sleep(smooth_duration_ms / 1000)
+            except (LLMTimeoutError, LLMConnectionError):
+                estimated = estimate_input_tokens(self.system_prompt, self.messages, self.images)
+                usage = RawUsage(model=model, input_tokens=estimated, estimated=True, operation=self.operation, call_id=call_id)
+                if not disable_usage:
+                    if self.on_usage is not None:
+                        await self.on_usage(usage)
+                    await self._fire_usage(usage)
+                raise
         # Default: fire once at the end (one DB write); ``usage_chunks`` already fired per chunk.
-        usage = final_usage if final_usage is not None else RawUsage(model=model, estimated=True, operation=self.operation)
+        usage = final_usage if final_usage is not None else RawUsage(model=model, estimated=True, operation=self.operation, call_id=call_id)
         if not disable_usage and not usage_chunks:
             if self.on_usage is not None:
                 await self.on_usage(usage)
@@ -713,18 +757,24 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
     ) -> list[ResponseT]:
         """Parallel non-streaming calls to each model name."""
         await self._gate_budget()
-        coros = [
-            self.client._send(self._build_request(m, stream=False))  # noqa: SLF001
-            for m in models
-        ]
+        # One request per model, so one call id each.
+        requests = [self._build_request(m, stream=False, call_id=self._next_call_id()) for m in models]
+        coros = [self.client._send(request) for request in requests]  # noqa: SLF001
         responses = await execute_multicall(coros, models, timeout=timeout)  # ty:ignore[invalid-argument-type]
-        for response in responses:
+        for request, response in zip(requests, responses, strict=True):
+            response.usage.call_id = request.call_id
             self._apply_cast_json(response)
         if self.on_usage is not None:
             estimated_input = estimate_input_tokens(self.system_prompt, self.messages, self.images)
             for response in responses:
                 usage = (
-                    RawUsage(model=response.model, input_tokens=estimated_input, estimated=True, operation=self.operation)
+                    RawUsage(
+                        model=response.model,
+                        input_tokens=estimated_input,
+                        estimated=True,
+                        operation=self.operation,
+                        call_id=response.usage.call_id,
+                    )
                     if response.status == OutputStatus.TIMEOUT
                     else response.usage
                 )
@@ -757,6 +807,8 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         ``RawUsage`` (estimated for timed-out models).
         """
         await self._gate_budget()
+        # One request fanned out server-side: every model's answer shares its call id.
+        call_id = self._next_call_id()
         request = LLMRequest(
             target=ParallelTarget(models=models, specifics_by_model=specifics_by_model),
             system_prompt=self.system_prompt,
@@ -772,6 +824,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             max_tries=self.max_tries,
             timeout=self.timeout,
             batch_timeout=timeout,
+            call_id=call_id,
             zone_selection=self.zone_selection,
             hosting_providers=self.hosting_providers,
             plan=self.plan,
@@ -783,18 +836,26 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             **self._conversation_controls(),
         )
         estimated_input: int | None = None
-        async for frame in self.client._stream_batch(request):  # noqa: SLF001
-            self._apply_cast_json(frame.response)
-            if self.on_usage is not None:
-                if frame.response.status == OutputStatus.TIMEOUT:
-                    if estimated_input is None:
-                        estimated_input = estimate_input_tokens(self.system_prompt, self.messages, self.images)
-                    usage = RawUsage(model=frame.response.model, input_tokens=estimated_input, estimated=True, operation=self.operation)
-                else:
-                    usage = frame.response.usage
-                await self.on_usage(usage)
-            await self._fire(frame.response)
-            yield frame.index, frame.response
+        with _naming_failures(call_id):
+            async for frame in self.client._stream_batch(request):  # noqa: SLF001
+                frame.response.usage.call_id = call_id
+                self._apply_cast_json(frame.response)
+                if self.on_usage is not None:
+                    if frame.response.status == OutputStatus.TIMEOUT:
+                        if estimated_input is None:
+                            estimated_input = estimate_input_tokens(self.system_prompt, self.messages, self.images)
+                        usage = RawUsage(
+                            model=frame.response.model,
+                            input_tokens=estimated_input,
+                            estimated=True,
+                            operation=self.operation,
+                            call_id=call_id,
+                        )
+                    else:
+                        usage = frame.response.usage
+                    await self.on_usage(usage)
+                await self._fire(frame.response)
+                yield frame.index, frame.response
 
     async def batch_multicall(
         self,
@@ -813,8 +874,11 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         (e.g. Gemini 3 vs Gemini 2.5 thinking-config schemas).
         """
         await self._gate_budget()
+        # One request fanned out server-side: every model's answer shares its call id.
+        call_id = self._next_call_id()
         batch = LLMRequest(
             target=ParallelTarget(models=models, specifics_by_model=specifics_by_model),
+            call_id=call_id,
             system_prompt=self.system_prompt,
             messages=self.messages,
             images=self.images,
@@ -837,14 +901,16 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             seed_routing=self.seed_routing,
             **self._conversation_controls(),
         )
-        responses = await self.client._send_batch(batch)  # noqa: SLF001
+        with _naming_failures(call_id):
+            responses = await self.client._send_batch(batch)  # noqa: SLF001
         for response in responses:
+            response.usage.call_id = call_id
             self._apply_cast_json(response)
         if self.on_usage is not None:
             estimated_input = estimate_input_tokens(self.system_prompt, self.messages, self.images)
             for response in responses:
                 usage = (
-                    RawUsage(model=response.model, input_tokens=estimated_input, estimated=True, operation=self.operation)
+                    RawUsage(model=response.model, input_tokens=estimated_input, estimated=True, operation=self.operation, call_id=call_id)
                     if response.status == OutputStatus.TIMEOUT
                     else response.usage
                 )
@@ -869,7 +935,8 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         - ``LLMAuthError``, ``LLMCapabilityError``.
 
         When an exception triggers a fallback, ``on_usage`` is called with
-        estimated input tokens (``estimated=True``) for the failed attempt.
+        estimated input tokens (``estimated=True``) for the failed attempt, under
+        the call id of the request that failed (the exception's ``call_id``).
         When the server returns a non-SUCCESS response, ``on_usage`` was already
         called by ``call()`` with the server-reported usage; no duplicate call
         is made.
@@ -891,7 +958,10 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             except _fallback_exc as exc:
                 logger.warning("call_prefer: model=%s failed (%s), trying next", model, exc)
                 if self.on_usage is not None:
-                    await self.on_usage(RawUsage(model=model, input_tokens=estimated_input, estimated=True, operation=self.operation))
+                    failed = RawUsage(
+                        model=model, input_tokens=estimated_input, estimated=True, operation=self.operation, call_id=exc.call_id
+                    )
+                    await self.on_usage(failed)
         if last is not None:
             return last
         return self._finalize(LLMResponse(model=models[-1] if models else "", status=OutputStatus.NO_DEPLOYMENT))
@@ -913,8 +983,10 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
     ) -> ResponseT:
         """Server-side best: one request fans out across `models`, returns the SUCCESS ranked best by `extra_attributes[attribute]`."""
         await self._gate_budget()
+        call_id = self._next_call_id()
         request = LLMRequest(
             target=BestTarget(models=models, attribute=attribute, direction=direction),
+            call_id=call_id,
             system_prompt=self.system_prompt,
             messages=self.messages,
             images=self.images,
@@ -937,7 +1009,9 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             seed_routing=self.seed_routing,
             **self._conversation_controls(),
         )
-        response = await self.client._send(request)  # noqa: SLF001
+        with _naming_failures(call_id):
+            response = await self.client._send(request)  # noqa: SLF001
+        response.usage.call_id = call_id
         self._apply_cast_json(response)
         if self.on_usage is not None:
             await self.on_usage(response.usage)
@@ -1011,7 +1085,15 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         for _ in range(self.tool_max_iters):
             allow_tools = self.tool_max_tokens_before_use is None or _conversation_token_count(messages) <= self.tool_max_tokens_before_use
             turn_messages = messages if allow_tools else [*messages, Message.user(_TOOL_BUDGET_EXCEEDED_NOTE)]
-            turn = self.model_copy(update={"messages": turn_messages, "tool_executor": None, "tools": self.tools if allow_tools else None})
+            # Each turn is its own Gate request: the caller's id (if any) goes to the first, the rest mint.
+            turn = self.model_copy(
+                update={
+                    "messages": turn_messages,
+                    "tool_executor": None,
+                    "tools": self.tools if allow_tools else None,
+                    "call_id": self._take_call_id(),
+                }
+            )
             response = await turn._call_raw(model, disable_usage=disable_usage)  # noqa: SLF001
             last = response
             total = total + response.usage
@@ -1058,7 +1140,15 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         for _ in range(self.tool_max_iters):
             allow_tools = self.tool_max_tokens_before_use is None or _conversation_token_count(messages) <= self.tool_max_tokens_before_use
             turn_messages = messages if allow_tools else [*messages, Message.user(_TOOL_BUDGET_EXCEEDED_NOTE)]
-            turn = self.model_copy(update={"messages": turn_messages, "tool_executor": None, "tools": self.tools if allow_tools else None})
+            # Each turn is its own Gate request: the caller's id (if any) goes to the first, the rest mint.
+            turn = self.model_copy(
+                update={
+                    "messages": turn_messages,
+                    "tool_executor": None,
+                    "tools": self.tools if allow_tools else None,
+                    "call_id": self._take_call_id(),
+                }
+            )
             text_parts: list[str] = []
             acc: dict[int, ToolCall] = {}
             async for chunk in turn.call_stream(
@@ -1122,6 +1212,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
                     "tool_executor": None,
                     "tool_stream_executor": None,
                     "tools": tools if allow_tools else None,
+                    "call_id": self._take_call_id(),
                 },
             )
             text_parts: list[str] = []
@@ -1167,10 +1258,13 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             if not retrigger:
                 return
 
-    def _build_request(self, model: str, stream: bool, *, smooth_server_side: bool = False, smooth_duration_ms: int = 0) -> LLMRequest:
+    def _build_request(
+        self, model: str, stream: bool, *, call_id: UUID, smooth_server_side: bool = False, smooth_duration_ms: int = 0
+    ) -> LLMRequest:
         target = FallbackTarget(models=self.prefer_models) if self.prefer_models else SingleTarget(model=model)
         return LLMRequest(
             target=target,
+            call_id=call_id,
             system_prompt=self.system_prompt,
             messages=self.messages,
             tools=self.tools,
@@ -1231,7 +1325,10 @@ class StreamRequestBuilder:
 
     def _run(self, model: str, prefer: list[str] | None) -> AsyncIterator[StreamChunk]:
         """Dispatch to ``call_stream`` with the captured options; ``prefer`` selects the target."""
-        source = self._source.model_copy(update={"prefer_models": prefer}) if prefer else self._source
+        source = self._source
+        if prefer:
+            # The copy dispatches in the source's place, so it takes the caller's id with it.
+            source = source.model_copy(update={"prefer_models": prefer, "call_id": source._take_call_id()})  # noqa: SLF001
         return source.call_stream(
             model,
             smooth=self._smooth,
@@ -1331,7 +1428,11 @@ class ImageRequestBuilder(MediaBuilder[ImageResponse]):
     async def call(self, model: str) -> ImageResponse:
         """Generate or edit images with ``model`` (edit mode when ``images`` was set)."""
         await self._gate_budget()
-        response = await self.client._send_images(self.request.model_copy(update={"model": model}))  # noqa: SLF001
+        call_id = self._next_call_id()
+        request = self.request.model_copy(update={"model": model, "call_id": call_id})
+        with _naming_failures(call_id):
+            response = await self.client._send_images(request)  # noqa: SLF001
+        response.usage.call_id = call_id
         await self._fire(response)
         return response
 
@@ -1342,16 +1443,20 @@ class ImageRequestBuilder(MediaBuilder[ImageResponse]):
     async def call_stream(self, model: str) -> AsyncIterator[ImageData]:
         """Stream partial image frames; after the final frame, fire usage + result callbacks."""
         await self._gate_budget()
-        request = self.request.model_copy(update={"model": model})
+        call_id = self._next_call_id()
+        request = self.request.model_copy(update={"model": model, "call_id": call_id})
         frames: list[ImageData] = []
         terminal_usage: RawUsage | None = None
-        async for chunk in self.client._stream_images(request):  # noqa: SLF001
-            if isinstance(chunk, ImageData):
-                frames.append(chunk)
-                yield chunk
-            else:
-                terminal_usage = chunk
-        synth = ImageResponse(model=request.model, data=frames, usage=terminal_usage or RawUsage(model=request.model))
+        with _naming_failures(call_id):
+            async for chunk in self.client._stream_images(request):  # noqa: SLF001
+                if isinstance(chunk, ImageData):
+                    frames.append(chunk)
+                    yield chunk
+                else:
+                    terminal_usage = chunk
+        usage = terminal_usage or RawUsage(model=request.model)
+        usage.call_id = call_id
+        synth = ImageResponse(model=request.model, data=frames, usage=usage)
         await self._fire(synth)
 
     def stream(self) -> ImageStreamBuilder:
@@ -1411,7 +1516,11 @@ class TTSRequestBuilder(MediaBuilder[BaseAudioResponse]):
     async def call(self, model: str) -> BaseAudioResponse:
         """Synthesize speech with ``model`` (base64-encoded audio + usage)."""
         await self._gate_budget()
-        response = await self.client._send_tts(self.request.model_copy(update={"model": model}))  # noqa: SLF001
+        call_id = self._next_call_id()
+        request = self.request.model_copy(update={"model": model, "call_id": call_id})
+        with _naming_failures(call_id):
+            response = await self.client._send_tts(request)  # noqa: SLF001
+        response.usage.call_id = call_id
         await self._fire(response)
         return response
 
@@ -1422,14 +1531,16 @@ class TTSRequestBuilder(MediaBuilder[BaseAudioResponse]):
     async def call_stream(self, model: str) -> AsyncIterator[bytes]:
         """Stream raw speech bytes; fire usage (``input_tokens == len(text)``) at completion."""
         await self._gate_budget()
-        request = self.request.model_copy(update={"model": model})
-        async for chunk in self.client._stream_tts(request):  # noqa: SLF001
-            yield chunk
+        call_id = self._next_call_id()
+        request = self.request.model_copy(update={"model": model, "call_id": call_id})
+        with _naming_failures(call_id):
+            async for chunk in self.client._stream_tts(request):  # noqa: SLF001
+                yield chunk
         synth = TTSResponse(
             model=request.model,
             audio="",
             response_format=request.response_format,
-            usage=RawUsage(input_tokens=len(request.text), model=request.model),
+            usage=RawUsage(input_tokens=len(request.text), model=request.model, call_id=call_id),
         )
         await self._fire(synth)
 
@@ -1442,7 +1553,11 @@ class AudioGenRequestBuilder(MediaBuilder[BaseAudioResponse]):
     async def call(self, model: str) -> BaseAudioResponse:
         """Generate music / sound effects / dialogue with ``model`` (base64-encoded audio + usage)."""
         await self._gate_budget()
-        response = await self.client._send_audio_gen(self.request.model_copy(update={"model": model}))  # noqa: SLF001
+        call_id = self._next_call_id()
+        request = self.request.model_copy(update={"model": model, "call_id": call_id})
+        with _naming_failures(call_id):
+            response = await self.client._send_audio_gen(request)  # noqa: SLF001
+        response.usage.call_id = call_id
         await self._fire(response)
         return response
 
@@ -1459,8 +1574,11 @@ class VideoRequestBuilder(MediaBuilder[VideoResponse]):
     async def call(self, model: str) -> VideoResponse:
         """Generate a video with ``model`` and parse the response (base64-encoded video + usage)."""
         await self._gate_budget()
-        request = self.request.model_copy(update={"model": model})
-        response = await self.client._send_video(request)  # noqa: SLF001
+        call_id = self._next_call_id()
+        request = self.request.model_copy(update={"model": model, "call_id": call_id})
+        with _naming_failures(call_id):
+            response = await self.client._send_video(request)  # noqa: SLF001
+        response.usage.call_id = call_id
         await self._fire(response)
         return response
 
@@ -1485,9 +1603,12 @@ class DirectRequestBuilder[ResponseT: LLMCallRecord](MediaBuilder[ResponseT]):
     async def call(self, model: str) -> ResponseT:
         """POST to the endpoint with ``model`` resolved, then fire usage + callbacks."""
         await self._gate_budget()
-        request = self.request.model_copy(update={"model": model})
-        response = await self.client._post_json(self.path, request, self.label, client_timeout=self.client_timeout)  # noqa: SLF001
+        call_id = self._next_call_id()
+        request = self.request.model_copy(update={"model": model, "call_id": call_id})
+        with _naming_failures(call_id):
+            response = await self.client._post_json(self.path, request, self.label, client_timeout=self.client_timeout)  # noqa: SLF001
         parsed = self.response_type.model_validate(response.json())
+        parsed.usage.call_id = call_id
         await self._fire(parsed)
         return parsed
 

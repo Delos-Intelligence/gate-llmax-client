@@ -18,6 +18,7 @@ import httpx
 from pydantic import BaseModel
 
 from gate_llmax.byok import byok_plan_hook
+from gate_llmax.ids import CALL_ID_HEADER, new_call_id
 from gate_llmax.models.audio import AudioRequest, AudioResponse
 from gate_llmax.models.audio_gen import AudioGenMode, AudioGenRequest, AudioGenResponse, AudioMode, DialogueTurn
 from gate_llmax.models.audio_isolation import AudioIsolationRequest, AudioIsolationResponse
@@ -1656,7 +1657,7 @@ class LLMClient:
             response = await self._http.post(
                 path,
                 content=request.model_dump_json(),
-                headers={"Content-Type": "application/json"},
+                headers=_json_headers(request),
                 timeout=client_timeout if client_timeout is not None else self._timeout,
             )
         except httpx.TimeoutException as exc:
@@ -1687,7 +1688,7 @@ class LLMClient:
                 response = await self._http.post(
                     "/v1/chat/completions",
                     content=request.model_dump_json(),
-                    headers={"Content-Type": "application/json"},
+                    headers=_json_headers(request),
                     # Explicit: a shared httpx_aclient must not decide this client's ceiling.
                     timeout=ceiling,
                 )
@@ -1709,7 +1710,7 @@ class LLMClient:
             response = await self._http.post(
                 "/v1/chat/completions",
                 content=request.model_dump_json(),
-                headers={"Content-Type": "application/json"},
+                headers=_json_headers(request),
                 timeout=client_timeout,
             )
         except httpx.TimeoutException as exc:
@@ -1728,7 +1729,7 @@ class LLMClient:
                 "POST",
                 "/v1/chat/completions",
                 content=request.model_dump_json(),
-                headers={"Content-Type": "application/json"},
+                headers=_json_headers(request),
                 timeout=client_timeout,
             ) as response:
                 if response.status_code >= 400:
@@ -1760,7 +1761,7 @@ class LLMClient:
             "POST",
             "/v1/chat/completions",
             content=request.model_dump_json(),
-            headers={"Content-Type": "application/json"},
+            headers=_json_headers(request),
             timeout=self._stream_timeout,
         ) as response:
             if response.status_code >= 400:
@@ -1787,8 +1788,11 @@ class LLMClient:
 
         A severed connection restarts here rather than reaching the caller, resuming from the
         text already delivered. Once the attempts are spent the stream ends on a chunk carrying
-        ``finish_reason="interrupted"`` instead of raising.
+        ``finish_reason="interrupted"`` instead of raising. Every resumed leg is the same Gate
+        request, so the call id is fixed before the first one and each leg sends it.
         """
+        if request.call_id is None:
+            request = request.model_copy(update={"call_id": new_call_id()})
         async with self._limiter.guard(priority):
             total = 0
             delivered = ""  # text already handed to the caller; the resume point
@@ -1836,7 +1840,7 @@ class LLMClient:
             response = await self._http.post(
                 "/v1/images",
                 content=request.model_dump_json(),
-                headers={"Content-Type": "application/json"},
+                headers=_json_headers(request),
                 timeout=request_ceiling(request, tries=MEDIA_MAX_TRIES),
             )
         except httpx.TimeoutException as exc:
@@ -1853,7 +1857,7 @@ class LLMClient:
                 "POST",
                 "/v1/images/stream",
                 content=request.model_dump_json(),
-                headers={"Content-Type": "application/json"},
+                headers=_json_headers(request),
                 timeout=request_ceiling(request, tries=MEDIA_MAX_TRIES),
             ) as response:
                 if response.status_code >= 400:
@@ -1890,7 +1894,7 @@ class LLMClient:
             response = await self._http.post(
                 "/v1/audio/speech",
                 content=request.model_dump_json(),
-                headers={"Content-Type": "application/json"},
+                headers=_json_headers(request),
                 timeout=request_ceiling(request, tries=MEDIA_MAX_TRIES),
             )
         except httpx.TimeoutException as exc:
@@ -1907,7 +1911,7 @@ class LLMClient:
                 "POST",
                 "/v1/audio/speech/stream",
                 content=request.model_dump_json(),
-                headers={"Content-Type": "application/json"},
+                headers=_json_headers(request),
                 timeout=request_ceiling(request, tries=MEDIA_MAX_TRIES),
             ) as response:
                 if response.status_code >= 400:
@@ -1960,6 +1964,12 @@ def seed_to_token(seed: object | None) -> str | None:
     if seed is None:
         return None
     return hashlib.sha256(json.dumps(seed, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _json_headers(request: BaseModel) -> dict[str, str]:
+    """Headers for POSTing ``request`` to Gate: JSON, and the call id naming it (a fresh one when it carries none)."""
+    call_id = getattr(request, "call_id", None) or new_call_id()
+    return {"Content-Type": "application/json", CALL_ID_HEADER: str(call_id)}
 
 
 def _raise_for_status(response: httpx.Response) -> None:

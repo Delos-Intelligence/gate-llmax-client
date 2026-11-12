@@ -9,6 +9,7 @@ import json
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, Self
 
+from .ids import CALL_ID_HEADER, new_call_id
 from .models.realtime import (
     RealtimeAudioData,
     RealtimeCapabilities,
@@ -18,6 +19,8 @@ from .models.realtime import (
 )
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from websockets.asyncio.client import ClientConnection
 
     from .models.response import RawUsage
@@ -56,13 +59,17 @@ class RealtimeConnection:
         self._reading = False
         self.capabilities = RealtimeCapabilities()
         self.usage: RawUsage | None = None
+        # The session is one Gate request: named once at connect (the config's own id, else a fresh UUIDv7).
+        self.call_id: UUID | None = None
 
     async def __aenter__(self) -> Self:
         """Open the socket, read the capabilities handshake, and send the session config."""
         from websockets.asyncio.client import connect
 
+        self.call_id = self._config.call_id or new_call_id()
         try:
-            self._ws = await connect(self._ws_url, additional_headers={"X-Gate-Key": self._api_key})
+            headers = {"X-Gate-Key": self._api_key, CALL_ID_HEADER: str(self.call_id)}
+            self._ws = await connect(self._ws_url, additional_headers=headers)
             created = json.loads(await self._ws.recv())
             self.capabilities = RealtimeCapabilities.model_validate(created.get("capabilities", {}))
             await self._ws.send(json.dumps({"type": "session.update", "session": self._config.model_dump(exclude_none=True)}))
@@ -148,6 +155,7 @@ class RealtimeConnection:
         """Record Gate's billed session usage and fire the client's usage callbacks, once."""
         if self.usage is not None:
             return
+        usage.call_id = self.call_id
         self.usage = usage
         for cb in self._usage_callbacks:
             await cb(usage)
