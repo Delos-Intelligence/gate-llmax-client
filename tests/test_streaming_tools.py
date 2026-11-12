@@ -142,3 +142,67 @@ def test_a_raising_executor_surfaces_its_error(monkeypatch: Any) -> None:
     )
     with pytest.raises(RuntimeError, match="tool blew up"):
         asyncio.run(asyncio.wait_for(_collect(builder), timeout=2))
+
+
+def _builder_with_a_slow_tool(events: list[str]) -> Any:
+    """A tool that reports progress, then works for a while; ``events`` records whether it was cancelled or ran on."""
+
+    async def executor(tool_id: str, name: str, args: dict) -> AsyncIterator[ToolStreamItem]:  # noqa: ARG001
+        yield ToolProgress(content="[searching] ")
+        try:
+            await asyncio.sleep(0.2)
+        except asyncio.CancelledError:
+            events.append("tool cancelled")
+            raise
+        events.append("tool ran on")
+        yield ToolResult(output="found 3", redo=True)
+
+    client = LLMClient(api_key="k", base_url="http://x")
+    return client.request(prompt="hi", operation="test_streaming_tools").with_tools(
+        [{"type": "function", "function": {"name": "search"}}], stream_executor=executor
+    )
+
+
+def test_a_caller_closing_mid_tool_cancels_the_tool(monkeypatch: Any) -> None:
+    """A caller who closes the stream on a tool's progress cancels that tool, instead of leaving it running unseen."""
+    monkeypatch.setattr(client_mod.LLMClient, "_stream", _scripted_stream())
+    events: list[str] = []
+    builder = _builder_with_a_slow_tool(events)
+
+    async def leave_on_progress() -> None:
+        stream = builder.call_stream("m")
+        async for chunk in stream:
+            if chunk.text == "[searching] ":
+                break
+        await stream.aclose()
+        events.append("caller closed")
+        await asyncio.sleep(0.3)
+
+    asyncio.run(leave_on_progress())
+    assert events == ["tool cancelled", "caller closed"]
+
+
+def test_a_cancelled_caller_cancels_the_running_tool(monkeypatch: Any) -> None:
+    """Cancelling the task reading the stream while a tool runs cancels that tool too."""
+    monkeypatch.setattr(client_mod.LLMClient, "_stream", _scripted_stream())
+    events: list[str] = []
+    builder = _builder_with_a_slow_tool(events)
+
+    async def stop_on_progress() -> None:
+        progressed = asyncio.Event()
+
+        async def consume() -> None:
+            async for chunk in builder.call_stream("m"):
+                if chunk.text == "[searching] ":
+                    progressed.set()
+
+        consumer = asyncio.create_task(consume())
+        await progressed.wait()
+        consumer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await consumer
+        events.append("caller cancelled")
+        await asyncio.sleep(0.3)
+
+    asyncio.run(stop_on_progress())
+    assert events == ["tool cancelled", "caller cancelled"]

@@ -1301,19 +1301,25 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             answered: set[str] = set()
             retrigger = True
             done = 0
-            while done < len(tasks):
-                tc, item = await queue.get()
-                if item is None:
-                    done += 1
-                elif isinstance(item, ToolProgress):
-                    yield StreamChunk(text=item.content)
-                else:
-                    messages.append(Message.tool(tc.id, item.output or "", name=tc.function.name, images=item.images))
-                    tools.extend(_unoffered_tools(tools, item.add_tools))
-                    answered.add(tc.id)
-                    if not item.redo:
-                        retrigger = False
-            await asyncio.gather(*tasks)
+            try:
+                while done < len(tasks):
+                    tc, item = await queue.get()
+                    if item is None:
+                        done += 1
+                    elif isinstance(item, ToolProgress):
+                        yield StreamChunk(text=item.content)
+                    else:
+                        messages.append(Message.tool(tc.id, item.output or "", name=tc.function.name, images=item.images))
+                        tools.extend(_unoffered_tools(tools, item.add_tools))
+                        answered.add(tc.id)
+                        if not item.redo:
+                            retrigger = False
+                await asyncio.gather(*tasks)
+            finally:
+                # A caller who left mid-tool (aclose() or a cancellation) stops the tools, and waits for them to unwind.
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
             # OpenAI requires a tool message per tool_call_id on the next turn; backfill any the tool left silent.
             messages.extend(Message.tool(tc.id, "", name=tc.function.name) for tc in tool_calls if tc.id not in answered)
             if not retrigger:
