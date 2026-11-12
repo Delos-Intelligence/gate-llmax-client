@@ -19,7 +19,7 @@ from pydantic import BaseModel
 
 from gate_llmax.byok import byok_plan_hook
 from gate_llmax.ids import CALL_ID_HEADER, new_call_id
-from gate_llmax.metering import ListPrice, MeteredStream, PriceCache, StreamMeter
+from gate_llmax.metering import UNSENT_TIMEOUTS, ListPrice, MeteredStream, PriceCache, StreamMeter
 from gate_llmax.models.audio import AudioRequest, AudioResponse
 from gate_llmax.models.audio_gen import AudioGenMode, AudioGenRequest, AudioGenResponse, AudioMode, DialogueTurn
 from gate_llmax.models.audio_isolation import AudioIsolationRequest, AudioIsolationResponse
@@ -1839,6 +1839,8 @@ class LLMClient:
                         yield chunk
                     break
                 except httpx.TimeoutException as exc:
+                    if isinstance(exc, UNSENT_TIMEOUTS):
+                        meter.unsent()
                     gap = self._stream_timeout.read or 0.0
                     msg = f"Client-side stream ceiling ({gap:.0f}s transport read) hit before the gateway sent a frame: {exc}"
                     raise LLMTimeoutError(msg) from exc

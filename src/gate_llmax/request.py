@@ -41,7 +41,7 @@ from .exceptions import (
     LLMServerError,
     LLMTimeoutError,
 )
-from .metering import Closing, MeteredStream, StreamMeter, bears_usage, chunk_usage, estimated_usage, settle
+from .metering import Closing, MeteredStream, StreamMeter, bears_usage, chunk_usage, estimated_usage, settle, timed_out_unsent
 from .multicall import execute_multicall
 from .parsing import extract_json_from_text, extract_json_list_from_text
 from .tokens import count, estimate_input_tokens
@@ -655,7 +655,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         ``disable_usage`` skips the usage callbacks (``on_usage`` + billing) for this turn;
         response callbacks still fire. A turn that times out or is cancelled before Gate answers
         fires an estimate of its prompt (``estimated=True``), then re-raises; one that could not
-        connect fires nothing, Gate never having received it.
+        connect, or timed out before it was sent, fires nothing, Gate never having received it.
         """
         await self._gate_budget()
         call_id = self._next_call_id()
@@ -663,9 +663,9 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         try:
             with _naming_failures(call_id):
                 response = await self.client._send(request, priority=priority)  # noqa: SLF001
-        except (LLMTimeoutError, asyncio.CancelledError):
-            # No answer, so no usage from Gate, but the request went out: bill its prompt as an estimate.
-            if not disable_usage:
+        except (LLMTimeoutError, asyncio.CancelledError) as exc:
+            # No answer, so no usage from Gate; a request that went out bills its prompt as an estimate.
+            if not disable_usage and not timed_out_unsent(exc):
                 prompt = estimate_input_tokens(self.system_prompt, self.messages, self.images)
                 await settle(self._bill_estimate(model, call_id, prompt), quiet=True)
             raise
@@ -825,10 +825,9 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         async def send(request: LLMRequest) -> LLMResponse:
             try:
                 return await self.client._send(request)  # noqa: SLF001
-            except LLMTimeoutError:
-                raise
-            except Exception:
-                unbilled.add(request.call_id)
+            except Exception as exc:
+                if not isinstance(exc, LLMTimeoutError) or timed_out_unsent(exc):
+                    unbilled.add(request.call_id)
                 raise
 
         responses = await execute_multicall([send(request) for request in requests], models, timeout=timeout)

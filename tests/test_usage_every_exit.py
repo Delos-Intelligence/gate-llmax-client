@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Callable
+from functools import partial
 from typing import Any
 from urllib.parse import unquote
 from uuid import UUID
@@ -349,27 +350,37 @@ async def test_a_stream_timing_out_fires_a_priced_estimate_and_raises() -> None:
     assert usages.one.call_id == raised.value.call_id == gate.ids[0]
 
 
-def refuse() -> httpx.Response:
+def refuse(error: type[httpx.TransportError] = httpx.ConnectError) -> httpx.Response:
     msg = "refused"
-    raise httpx.ConnectError(msg)
+    raise error(msg)
 
 
-async def test_a_stream_gate_never_received_fires_nothing() -> None:
-    gate = Gate(scripted(refuse))
+# Each way httpx fails before a request leaves the client, and the error the caller gets for it.
+UNSENT: dict[type[httpx.TransportError], type[Exception]] = {
+    httpx.ConnectError: LLMConnectionError,
+    httpx.ConnectTimeout: LLMTimeoutError,
+    httpx.PoolTimeout: LLMTimeoutError,
+}
+
+
+@pytest.mark.parametrize("error", UNSENT, ids=lambda error: error.__name__)
+async def test_a_stream_gate_never_received_fires_nothing(error: type[httpx.TransportError]) -> None:
+    gate = Gate(scripted(partial(refuse, error)))
     client, usages = make_client(gate)
 
-    with pytest.raises(LLMConnectionError):
+    with pytest.raises(UNSENT[error]):
         [c async for c in client.request(prompt=PROMPT, operation="t").call_stream("m")]
 
     assert usages.seen == []
     assert gate.lookups == []
 
 
-async def test_a_resume_that_cannot_connect_fires_the_legs_sent() -> None:
-    gate = Gate(scripted(stream(text("Roses are "), end="drop"), refuse))
+@pytest.mark.parametrize("error", UNSENT, ids=lambda error: error.__name__)
+async def test_a_resume_that_cannot_connect_fires_the_legs_sent(error: type[httpx.TransportError]) -> None:
+    gate = Gate(scripted(stream(text("Roses are "), end="drop"), partial(refuse, error)))
     client, usages = make_client(gate)
 
-    with pytest.raises(LLMConnectionError):
+    with pytest.raises(UNSENT[error]):
         [c async for c in client.request(prompt=PROMPT, operation="t").call_stream("m")]
 
     # Only the first leg reached Gate: its prompt and what it delivered, nothing for the resume.
@@ -501,14 +512,16 @@ async def test_a_buffered_call_timing_out_fires_a_priced_estimate() -> None:
     assert usages.one.call_id == gate.ids[0]
 
 
-async def test_a_buffered_call_gate_never_received_fires_nothing() -> None:
-    gate = Gate(scripted(refuse))
+@pytest.mark.parametrize("error", UNSENT, ids=lambda error: error.__name__)
+async def test_a_buffered_call_gate_never_received_fires_nothing(error: type[httpx.TransportError]) -> None:
+    gate = Gate(scripted(partial(refuse, error)))
     client, usages = make_client(gate)
 
-    with pytest.raises(LLMConnectionError):
+    with pytest.raises(UNSENT[error]):
         await client.request(prompt=PROMPT, operation="t").call("m")
 
     assert usages.seen == []
+    assert gate.lookups == []
 
 
 async def test_a_cancelled_buffered_call_fires_an_estimate() -> None:
@@ -566,7 +579,8 @@ async def test_call_prefer_bills_each_attempt_as_a_plain_call_would() -> None:
     assert gate.lookups == [("b", None)]
 
 
-async def test_multicall_prices_a_timed_out_model_and_bills_nothing_for_a_refused_one() -> None:
+@pytest.mark.parametrize("error", UNSENT, ids=lambda error: error.__name__)
+async def test_multicall_prices_a_timed_out_model_and_bills_nothing_for_a_refused_one(error: type[httpx.TransportError]) -> None:
     async def reply(request: httpx.Request) -> Any:
         model = json.loads(request.content)["target"]["model"]
         if model == "b":
@@ -574,7 +588,7 @@ async def test_multicall_prices_a_timed_out_model_and_bills_nothing_for_a_refuse
         if model == "gone":
             return httpx.Response(404, json={"detail": "gone"})
         if model == "unreached":
-            return refuse()
+            return refuse(error)
         return httpx.Response(200, json=answer(model))
 
     gate = Gate(reply)

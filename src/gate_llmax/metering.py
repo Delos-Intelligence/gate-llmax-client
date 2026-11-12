@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from typing import Any, NamedTuple, Self
 from uuid import UUID
 
+import httpx
+
 from .exceptions import LLMConnectionError, LLMTimeoutError
 from .models.response import ROUND, RawUsage, StreamChunk
 from .tokens import count_text
@@ -26,6 +28,9 @@ PRICE_WAIT = 2.0  # longest an exit waits for a list price; past it the estimate
 PRICE_TTL = 300.0  # how long a list price is reused
 PRICE_RETRY = 60.0  # how long a failed lookup stands before an exit asks Gate again
 _CHARS_PER_TOKEN = 4
+# httpx timeouts raised before a request leaves the client (connecting, waiting for a pooled
+# connection): like a refused connection, Gate never received it.
+UNSENT_TIMEOUTS = (httpx.ConnectTimeout, httpx.PoolTimeout)
 
 type PriceKey = tuple[str, str | None]
 
@@ -138,6 +143,11 @@ def estimated_usage(
         call_id=call_id,
         finish_reason=finish_reason,
     )
+
+
+def timed_out_unsent(error: BaseException) -> bool:
+    """Whether ``error`` is an ``LLMTimeoutError`` raised from a timeout before its request left the client: it owes nothing."""
+    return isinstance(error, LLMTimeoutError) and isinstance(error.__cause__, UNSENT_TIMEOUTS)
 
 
 def _tokens(text: str) -> int:
