@@ -524,6 +524,25 @@ async def test_a_buffered_call_gate_never_received_fires_nothing(error: type[htt
     assert gate.lookups == []
 
 
+@pytest.mark.parametrize("error", [httpx.ReadError, httpx.RemoteProtocolError], ids=lambda error: error.__name__)
+async def test_a_buffered_call_losing_its_connection_fires_a_priced_estimate(error: type[httpx.TransportError]) -> None:
+    def drop() -> httpx.Response:
+        msg = "connection lost before the answer"
+        raise error(msg)
+
+    gate = Gate(scripted(drop))
+    on_usage = Usages()
+    client, usages = make_client(gate)
+
+    with pytest.raises(error):
+        await client.request(prompt=PROMPT, operation="t", on_usage=on_usage).call("m")
+
+    # Gate received the request: its prompt is billed as an estimate, under the id Gate logged.
+    assert_estimate(usages.one, input_tokens=PROMPT_TOKENS, output_tokens=0, price=PRICES["m"])
+    assert usages.one.call_id == gate.ids[0]
+    assert on_usage.one == usages.one
+
+
 async def test_a_cancelled_buffered_call_fires_an_estimate() -> None:
     async def never() -> httpx.Response:
         await asyncio.sleep(3600)
