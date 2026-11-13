@@ -33,7 +33,8 @@ _CHARS_PER_TOKEN = 4
 # httpx timeouts raised before a request leaves the client whole (connecting, waiting for a pooled
 # connection, writing the body): like a refused connection, Gate never received it.
 UNSENT_TIMEOUTS = (httpx.ConnectTimeout, httpx.PoolTimeout, httpx.WriteTimeout)
-# httpx errors reading the answer to a buffered request (reset, server gone): Gate received it.
+# httpx errors reading the answer to a buffered request (reset, server gone): Gate received it. Known gap: the same errors
+# come from a pooled keep-alive connection Gate closed as the request went out, which bills an estimate for a call Gate never got.
 LOST_AFTER_SEND = (httpx.ReadError, httpx.RemoteProtocolError)
 
 type PriceKey = tuple[str, str | None]
