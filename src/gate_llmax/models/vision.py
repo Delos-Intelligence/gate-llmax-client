@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from pydantic import BaseModel, Field
 
 
@@ -19,6 +21,11 @@ class VisionOCRRequest(BaseModel):
     max_tries: int | None = Field(default=None, description="Per-call upstream attempts, including the first.")
     timeout: int | None = Field(default=None, description="Per-call upstream timeout in seconds.")
     plan: str | None = Field(default=None, description="Informative hosting-plan tag echoed onto the usage row; does not restrict routing.")
+    call_id: UUID | None = Field(
+        default=None,
+        exclude=True,
+        description="Names this Gate request on its log rows; sent as the X-Gate-Call-Id header, never in the body.",
+    )
 
 
 class VisionPoint(BaseModel):

@@ -12,12 +12,14 @@ import time
 import warnings
 from collections.abc import AsyncIterator, Sequence
 from typing import TYPE_CHECKING, Any, Literal, Self, overload
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 from pydantic import BaseModel
 
 from gate_llmax.byok import byok_plan_hook
+from gate_llmax.ids import CALL_ID_HEADER, new_call_id
+from gate_llmax.metering import UNSENT_TIMEOUTS, ListPrice, MeteredStream, PriceCache, StreamMeter
 from gate_llmax.models.audio import AudioRequest, AudioResponse
 from gate_llmax.models.audio_gen import AudioGenMode, AudioGenRequest, AudioGenResponse, AudioMode, DialogueTurn
 from gate_llmax.models.audio_isolation import AudioIsolationRequest, AudioIsolationResponse
@@ -129,6 +131,7 @@ STREAM_FRAME_GAP = GATEWAY_MAX_BUDGET + CLIENT_MARGIN  # once frames flow, above
 STREAM_MAX_RETRIES = 2  # resume attempts after a severed connection
 STREAM_RETRY_BACKOFF = 0.5
 CATALOG_CACHE_TTL = 300.0  # how long model_attributes() reuses a /v1/models snapshot before re-fetching
+PRICE_FETCH_TIMEOUT = 10.0  # one list-price lookup; exits stop waiting for it long before (metering.PRICE_WAIT)
 # finish_reason when a drop could not be resumed: the answer above it is partial.
 STREAM_INTERRUPTED = "interrupted"
 
@@ -171,6 +174,7 @@ class LLMClient:
     _stream_first_frame: float
     _owns_http: bool
     _catalog_box: dict[str, Any]
+    _prices: PriceCache
 
     def __init__(
         self,
@@ -281,6 +285,8 @@ class LLMClient:
         self._stream_first_frame = stream_read_timeout
         # Shared so copy.copy views reuse one cached catalog snapshot.
         self._catalog_box = {"by_name": None, "at": 0.0}
+        # List prices for estimates, shared with every view the same way.
+        self._prices = PriceCache()
 
     def clear_usage_callbacks(self) -> None:
         """Drop all usage callbacks so subsequent calls on this client are unbilled / untracked.
@@ -374,9 +380,11 @@ class LLMClient:
         """Accumulated USD cost of every billed call on this client (the end-of-run total).
 
         Each completed call adds its ``RawUsage.total_cost``; calls made with ``disable_usage=True``
-        are excluded. Mirrors the in-process library's per-run accumulator: bill once at the end of a
-        run with ``min(client.total_usage, cap)`` instead of per call. Call ``reset_total_usage()`` to
-        start a fresh window (not needed for a per-run client, which starts at ``0.0``).
+        are excluded, and so are estimates (``RawUsage.estimated``): a cost Gate never reported
+        is data on the usage callbacks, not part of what a run bills. Mirrors the in-process
+        library's per-run accumulator: bill once at the end of a run with
+        ``min(client.total_usage, cap)`` instead of per call. Call ``reset_total_usage()`` to start
+        a fresh window (not needed for a per-run client, which starts at ``0.0``).
         """
         return self._total_usage
 
@@ -390,7 +398,8 @@ class LLMClient:
         A view also credits the client it came from, so the original's ``total_usage`` stays the
         total of everything sent through it.
         """
-        self._total_usage += usage.total_cost
+        if not usage.estimated:
+            self._total_usage += usage.total_cost
         if self._derived_from is not None:
             self._derived_from._record_usage(usage)  # noqa: SLF001
 
@@ -1107,6 +1116,19 @@ class LLMClient:
             box["at"] = time.monotonic()
         return box["by_name"]
 
+    async def _list_price(self, model: str, plan: str | None) -> ListPrice | None:
+        """``model``'s list price on ``plan``, cached and shared across views; ``None`` when Gate can't say within ``PRICE_WAIT``."""
+        return await self._prices.get(model, plan, self._fetch_list_price)
+
+    async def _fetch_list_price(self, model: str, plan: str | None) -> ListPrice:
+        """GET /v1/models/{model}: the price Gate lists ``model`` at. A group is priced as the model it serves on ``plan``."""
+        response = await self._http.get(
+            f"/v1/models/{quote(model, safe='')}", params={"plan": plan} if plan else None, timeout=PRICE_FETCH_TIMEOUT
+        )
+        _raise_for_status(response)
+        info = ModelInfo.model_validate(response.json())
+        return ListPrice(input=info.input_token_price, output=info.output_token_price)
+
     async def preload_catalog(self) -> None:
         """Warm the cached ``/v1/models`` snapshot that ``model_attributes()`` reads, so later lookups do no I/O."""
         await self._catalog_by_name(refresh=True)
@@ -1656,7 +1678,7 @@ class LLMClient:
             response = await self._http.post(
                 path,
                 content=request.model_dump_json(),
-                headers={"Content-Type": "application/json"},
+                headers=_json_headers(request),
                 timeout=client_timeout if client_timeout is not None else self._timeout,
             )
         except httpx.TimeoutException as exc:
@@ -1687,7 +1709,7 @@ class LLMClient:
                 response = await self._http.post(
                     "/v1/chat/completions",
                     content=request.model_dump_json(),
-                    headers={"Content-Type": "application/json"},
+                    headers=_json_headers(request),
                     # Explicit: a shared httpx_aclient must not decide this client's ceiling.
                     timeout=ceiling,
                 )
@@ -1709,7 +1731,7 @@ class LLMClient:
             response = await self._http.post(
                 "/v1/chat/completions",
                 content=request.model_dump_json(),
-                headers={"Content-Type": "application/json"},
+                headers=_json_headers(request),
                 timeout=client_timeout,
             )
         except httpx.TimeoutException as exc:
@@ -1728,7 +1750,7 @@ class LLMClient:
                 "POST",
                 "/v1/chat/completions",
                 content=request.model_dump_json(),
-                headers={"Content-Type": "application/json"},
+                headers=_json_headers(request),
                 timeout=client_timeout,
             ) as response:
                 if response.status_code >= 400:
@@ -1760,7 +1782,7 @@ class LLMClient:
             "POST",
             "/v1/chat/completions",
             content=request.model_dump_json(),
-            headers={"Content-Type": "application/json"},
+            headers=_json_headers(request),
             timeout=self._stream_timeout,
         ) as response:
             if response.status_code >= 400:
@@ -1782,19 +1804,30 @@ class LLMClient:
                 started = True
                 yield chunk
 
-    async def _stream(self, request: LLMRequest, *, priority: int = 0) -> AsyncIterator[StreamChunk]:
+    def _stream(self, request: LLMRequest, *, priority: int = 0) -> AsyncIterator[StreamChunk]:
         """POST with stream=True, throttled by the client's rate limiter (no-op when unset).
 
         A severed connection restarts here rather than reaching the caller, resuming from the
         text already delivered. Once the attempts are spent the stream ends on a chunk carrying
-        ``finish_reason="interrupted"`` instead of raising.
+        ``finish_reason="interrupted"`` instead of raising. Every resumed leg is the same Gate
+        request, so the call id is fixed before the first one and each leg sends it. The stream
+        returned is a ``MeteredStream``: its ``meter`` records what each leg was sent, delivered
+        and reported, for the usage the builder fires however the stream ends.
         """
+        if request.call_id is None:
+            request = request.model_copy(update={"call_id": new_call_id()})
+        meter = StreamMeter()
+        return MeteredStream(self._stream_legs(request, priority, meter), meter)
+
+    async def _stream_legs(self, request: LLMRequest, priority: int, meter: StreamMeter) -> AsyncIterator[StreamChunk]:
+        """The resume loop behind ``_stream``: one ``_stream_once`` leg per attempt, each recorded on ``meter``."""
         async with self._limiter.guard(priority):
             total = 0
             delivered = ""  # text already handed to the caller; the resume point
             tool_started = False
             attempt = 0
             while True:
+                meter.start_leg(delivered)
                 try:
                     async for chunk in self._stream_once(resume_request(request, delivered) if delivered else request):
                         if chunk.output_tokens is not None:
@@ -1802,20 +1835,31 @@ class LLMClient:
                         if chunk.tool_calls_delta:
                             tool_started = True
                         delivered += chunk.text
+                        meter.observe(chunk)
                         yield chunk
                     break
                 except httpx.TimeoutException as exc:
+                    if isinstance(exc, UNSENT_TIMEOUTS):
+                        meter.unsent()
                     gap = self._stream_timeout.read or 0.0
                     msg = f"Client-side stream ceiling ({gap:.0f}s transport read) hit before the gateway sent a frame: {exc}"
                     raise LLMTimeoutError(msg) from exc
                 except httpx.ConnectError as exc:
+                    meter.unsent()
                     raise LLMConnectionError(f"Could not connect to gateway: {exc}") from exc
+                except (LLMError, httpx.HTTPStatusError) as exc:
+                    # An error status or frame; a timeout is Gate running the leg, not refusing it.
+                    if not isinstance(exc, LLMTimeoutError):
+                        meter.refused()
+                    raise
                 except TRANSIENT_STREAM_ERRORS as exc:
                     # A half-streamed tool call has truncated arguments; re-asking would emit
                     # a second call the caller would merge into the first.
                     if tool_started or attempt >= STREAM_MAX_RETRIES:
                         logger.exception("stream: dropped after %d chars, giving up", len(delivered))
-                        yield StreamChunk(is_done=True, finish_reason=STREAM_INTERRUPTED)
+                        interrupted = StreamChunk(is_done=True, finish_reason=STREAM_INTERRUPTED)
+                        meter.observe(interrupted)
+                        yield interrupted
                         break
                     delay = STREAM_RETRY_BACKOFF * 2**attempt
                     attempt += 1
@@ -1836,7 +1880,7 @@ class LLMClient:
             response = await self._http.post(
                 "/v1/images",
                 content=request.model_dump_json(),
-                headers={"Content-Type": "application/json"},
+                headers=_json_headers(request),
                 timeout=request_ceiling(request, tries=MEDIA_MAX_TRIES),
             )
         except httpx.TimeoutException as exc:
@@ -1853,7 +1897,7 @@ class LLMClient:
                 "POST",
                 "/v1/images/stream",
                 content=request.model_dump_json(),
-                headers={"Content-Type": "application/json"},
+                headers=_json_headers(request),
                 timeout=request_ceiling(request, tries=MEDIA_MAX_TRIES),
             ) as response:
                 if response.status_code >= 400:
@@ -1890,7 +1934,7 @@ class LLMClient:
             response = await self._http.post(
                 "/v1/audio/speech",
                 content=request.model_dump_json(),
-                headers={"Content-Type": "application/json"},
+                headers=_json_headers(request),
                 timeout=request_ceiling(request, tries=MEDIA_MAX_TRIES),
             )
         except httpx.TimeoutException as exc:
@@ -1907,7 +1951,7 @@ class LLMClient:
                 "POST",
                 "/v1/audio/speech/stream",
                 content=request.model_dump_json(),
-                headers={"Content-Type": "application/json"},
+                headers=_json_headers(request),
                 timeout=request_ceiling(request, tries=MEDIA_MAX_TRIES),
             ) as response:
                 if response.status_code >= 400:
@@ -1960,6 +2004,12 @@ def seed_to_token(seed: object | None) -> str | None:
     if seed is None:
         return None
     return hashlib.sha256(json.dumps(seed, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _json_headers(request: BaseModel) -> dict[str, str]:
+    """Headers for POSTing ``request`` to Gate: JSON, and the call id naming it (a fresh one when it carries none)."""
+    call_id = getattr(request, "call_id", None) or new_call_id()
+    return {"Content-Type": "application/json", CALL_ID_HEADER: str(call_id)}
 
 
 def _raise_for_status(response: httpx.Response) -> None:

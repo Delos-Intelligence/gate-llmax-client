@@ -5,11 +5,19 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from .models.response import ContentFilter
 
 
 class LLMError(Exception):
-    """Base exception for all Gate client errors."""
+    """Base exception for all Gate client errors.
+
+    ``call_id`` names the Gate request whose dispatch raised it (its ``X-Gate-Call-Id``), so the
+    failure can be tied to Gate's log row; ``None`` when no request went out, e.g. a budget denial.
+    """
+
+    call_id: UUID | None = None
 
 
 class LLMAuthError(LLMError):

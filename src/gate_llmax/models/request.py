@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Annotated, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -23,6 +24,11 @@ class CallControl(BaseModel):
         default=None, description="Seconds a stream may go silent (before its first token or between two) before Gate fails it over."
     )
     operation: str = Field(default="", description="Caller-supplied usage tag; echoed onto RawUsage and the usage log row.")
+    call_id: UUID | None = Field(
+        default=None,
+        exclude=True,
+        description="Names this Gate request on its log rows; sent as the X-Gate-Call-Id header, never in the body.",
+    )
     deployment_id: str | None = Field(
         default=None,
         description="Dev keys only: serve from this deployment id alone, skipping filters, rotation and fallback.",

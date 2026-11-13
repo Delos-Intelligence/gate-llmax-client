@@ -94,6 +94,7 @@ class RawUsage(BaseModel):
     duration_ms: int = 0
     ttft_ms: int | None = None
     operation: str = ""
+    call_id: UUID | None = None  # the Gate request reported (its X-Gate-Call-Id); a parallel target is one request, so its answers share it
     finish_reason: str = ""  # why generation stopped (stop/length/tool_calls/…); "length" on an empty answer means the cap was hit
     native_finish_reason: str = ""  # the provider's own reason before OpenAI-vocab flattening (Anthropic "refusal", Gemini "RECITATION", …)
 
@@ -128,6 +129,7 @@ class RawUsage(BaseModel):
             duration_ms=self.duration_ms + other.duration_ms,
             ttft_ms=self.ttft_ms if self.ttft_ms is not None else other.ttft_ms,
             operation=self.operation or other.operation,
+            call_id=self.call_id or other.call_id,
             finish_reason=self.finish_reason or other.finish_reason,
             native_finish_reason=self.native_finish_reason or other.native_finish_reason,
         )

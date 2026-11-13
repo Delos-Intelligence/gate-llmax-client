@@ -4,6 +4,8 @@ Two tiers:
   - ``count``: exact ``tiktoken`` (cl100k_base) count, for callers that need to
     budget context before sending. Kept byte-for-byte compatible with
     ``llmax.tokens.count`` so budgets calibrated against llmax stay identical.
+    ``count_text`` is the same count without llmax's ``repr()`` quoting, for the
+    output a stream delivered before Gate could report it.
   - ``estimate_input_tokens``: a dependency-free heuristic used when a request
     times out or the connection drops and the server never reports real counts,
     so callers still get a ``RawUsage`` with ``estimated=True``.
@@ -50,6 +52,11 @@ def count(text: str) -> int:
     Special tokens are treated as plain text (never raises on ``<|endoftext|>`` etc.).
     """
     return len(_encoding().encode(repr(text), disallowed_special=()))
+
+
+def count_text(text: str) -> int:
+    """Return the cl100k_base token count of ``text`` as a model would emit it: no ``repr()`` quoting, unlike ``count``."""
+    return len(_encoding().encode(text, disallowed_special=())) if text else 0
 
 
 def estimate_input_tokens(
