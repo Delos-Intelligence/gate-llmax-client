@@ -43,6 +43,7 @@ from gate_llmax.models.ocr import OCRDocument, OCRPage, OCRRequest, OCRResponse
 from gate_llmax.models.realtime import (
     RealtimeAudioData,
     RealtimeCapabilities,
+    RealtimeEndpoint,
     RealtimeEvent,
     RealtimeEventType,
     RealtimeInputTranscriptData,
@@ -228,6 +229,7 @@ __all__ = [
     "RealtimeAudioData",
     "RealtimeCapabilities",
     "RealtimeConnection",
+    "RealtimeEndpoint",
     "RealtimeEvent",
     "RealtimeEventType",
     "RealtimeInputTranscriptData",

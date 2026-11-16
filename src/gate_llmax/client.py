@@ -17,7 +17,7 @@ from urllib.parse import quote, urlencode
 import httpx
 from pydantic import BaseModel
 
-from gate_llmax.byok import byok_plan_hook
+from gate_llmax.byok import BYOK_PLAN_HEADER, byok_plan_hook
 from gate_llmax.ids import CALL_ID_HEADER, new_call_id
 from gate_llmax.metering import UNSENT_TIMEOUTS, ListPrice, MeteredStream, PriceCache, StreamMeter
 from gate_llmax.models.audio import AudioRequest, AudioResponse
@@ -31,7 +31,7 @@ from gate_llmax.models.embed import EmbedRequest, EmbedResponse
 from gate_llmax.models.images import AspectRatio, ImageData, ImageQuality, ImageRequest, ImageResponse, ImageSize
 from gate_llmax.models.messages import Message, MessageRole, TextMessage
 from gate_llmax.models.ocr import OCRDocument, OCRRequest, OCRResponse
-from gate_llmax.models.realtime import RealtimeSessionConfig
+from gate_llmax.models.realtime import RealtimeEndpoint, RealtimeSessionConfig
 from gate_llmax.models.request import LLMRequest, RequestSpecifics, ResolveRequest, ZoneSelection
 from gate_llmax.models.response import (
     ContentFilter,
@@ -662,6 +662,21 @@ class LLMClient:
             output_sample_rate=session_config.output_sample_rate,
             usage_callbacks=list(self._usage_callbacks),
         )
+
+    def realtime_endpoint(self, *, operation: str, session_id: str | None = None) -> RealtimeEndpoint:
+        """Gate's realtime base URL and the headers billing a socket to this client, for a vendor's own client pointed at Gate."""
+        headers = {
+            "X-Gate-Key": self._api_key,
+            CALL_ID_HEADER: str(new_call_id()),
+            "X-Gate-Operation": self._resolve_operation(operation),
+        }
+        if self._default_plan:
+            headers["X-Gate-Plan"] = self._default_plan
+        if self._byok_plan is not None:
+            headers[BYOK_PLAN_HEADER] = self._byok_plan.to_header()
+        if session_id:
+            headers["X-Gate-Session-Id"] = session_id
+        return RealtimeEndpoint(base_url=f"{self._base_url}/v1/realtime", headers=headers)
 
     def transcribe(
         self,
