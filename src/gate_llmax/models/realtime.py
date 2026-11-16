@@ -179,9 +179,10 @@ class RealtimeEvent(BaseModel):
 
 
 class RealtimeEndpoint(BaseModel):
-    """Where a vendor's own realtime client reaches Gate, and the headers that bill its socket to a client."""
+    """Where a vendor's own realtime client reaches Gate: its base URL, the key it sends, and the headers that bill its socket."""
 
     base_url: str
+    api_key: str
     headers: dict[str, str]
 
 

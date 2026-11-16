@@ -664,19 +664,15 @@ class LLMClient:
         )
 
     def realtime_endpoint(self, *, operation: str, session_id: str | None = None) -> RealtimeEndpoint:
-        """Gate's realtime base URL and the headers billing a socket to this client, for a vendor's own client pointed at Gate."""
-        headers = {
-            "X-Gate-Key": self._api_key,
-            CALL_ID_HEADER: str(new_call_id()),
-            "X-Gate-Operation": self._resolve_operation(operation),
-        }
+        """Gate's realtime base URL, key and billing headers, for a vendor's own client pointed at Gate; one socket or many."""
+        headers = {"X-Gate-Operation": self._resolve_operation(operation)}
         if self._default_plan:
             headers["X-Gate-Plan"] = self._default_plan
         if self._byok_plan is not None:
             headers[BYOK_PLAN_HEADER] = self._byok_plan.to_header()
         if session_id:
             headers["X-Gate-Session-Id"] = session_id
-        return RealtimeEndpoint(base_url=f"{self._base_url}/v1/realtime", headers=headers)
+        return RealtimeEndpoint(base_url=f"{self._base_url}/v1/realtime", api_key=self._api_key, headers=headers)
 
     def transcribe(
         self,
