@@ -431,6 +431,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
     deployment_id: str | None = None
     no_fallback: bool = False
     fallback_on_content_policy: bool = False
+    accept_empty: bool = False
     context_edits: ContextEdits | None = None
     compaction: CompactionPolicy | None = None
     compact_now: OnDemandCompaction | None = None
@@ -505,6 +506,11 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
     def with_content_policy_fallback(self, *, on: bool = True) -> Self:
         """On a provider content-policy block, advance to the next fallback model rather than return the block."""
         self.fallback_on_content_policy = on
+        return self
+
+    def with_accept_empty(self, *, on: bool = True) -> Self:
+        """Take an empty reply as the answer rather than retrying or falling back."""
+        self.accept_empty = on
         return self
 
     def with_context_edits(self, edits: ContextEdits) -> Self:
@@ -923,6 +929,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             deployment_id=self.deployment_id,
             no_fallback=self.no_fallback,
             fallback_on_content_policy=self.fallback_on_content_policy,
+            accept_empty=self.accept_empty,
             seed_routing=self.seed_routing,
             **self._conversation_controls(),
         )
@@ -992,6 +999,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             deployment_id=self.deployment_id,
             no_fallback=self.no_fallback,
             fallback_on_content_policy=self.fallback_on_content_policy,
+            accept_empty=self.accept_empty,
             seed_routing=self.seed_routing,
             **self._conversation_controls(),
         )
@@ -1099,6 +1107,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             deployment_id=self.deployment_id,
             no_fallback=self.no_fallback,
             fallback_on_content_policy=self.fallback_on_content_policy,
+            accept_empty=self.accept_empty,
             seed_routing=self.seed_routing,
             **self._conversation_controls(),
         )
@@ -1394,6 +1403,7 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             deployment_id=self.deployment_id,
             no_fallback=self.no_fallback,
             fallback_on_content_policy=self.fallback_on_content_policy,
+            accept_empty=self.accept_empty,
             seed_routing=self.seed_routing,
             **self._conversation_controls(),
             cache_call=self.cache_call,

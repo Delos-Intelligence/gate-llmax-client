@@ -62,6 +62,10 @@ class CallControl(BaseModel):
             "chain only — deployment rotation is unaffected."
         ),
     )
+    accept_empty: bool = Field(
+        default=False,
+        description="Return a reply with no text and no tool call as a success instead of retrying or falling back.",
+    )
     plan: str | None = Field(
         default=None,
         description=(
