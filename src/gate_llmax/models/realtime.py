@@ -178,6 +178,14 @@ class RealtimeEvent(BaseModel):
     session_usage: RawUsage | None = None
 
 
+class RealtimeEndpoint(BaseModel):
+    """Where a vendor's own realtime client reaches Gate: its base URL, the key it sends, and the headers that bill its socket."""
+
+    base_url: str
+    api_key: str
+    headers: dict[str, str]
+
+
 class RealtimeRecord(LLMCallRecord):
     """The final per-session billed record, logged once at teardown; carries the aggregated token usage."""
 
