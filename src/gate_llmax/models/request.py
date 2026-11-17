@@ -72,7 +72,7 @@ class CallControl(BaseModel):
             "Named preset of hosting providers (a cost/infra tier, e.g. 'omicron'). On chat it "
             "filters routing to the plan's hosting_providers (an explicit hosting_providers wins); "
             "on the other modalities it is informative only — logged, but routing is unrestricted. "
-            "None = no plan."
+            "'plan@region' (e.g. 'base@us') routes only in that region on a region-specifiable plan. None = no plan."
         ),
     )
 
@@ -207,7 +207,8 @@ class ResolveRequest(BaseModel):
         default=None,
         description=(
             "Named preset of hosting providers (a cost/infra tier, e.g. 'omicron'). Equivalent to "
-            "setting hosting_providers to the plan's set; an explicit hosting_providers wins. None = no plan."
+            "setting hosting_providers to the plan's set; an explicit hosting_providers wins. "
+            "'plan@region' (e.g. 'base@us') routes only in that region on a region-specifiable plan. None = no plan."
         ),
     )
     seed_routing: str | None = Field(
