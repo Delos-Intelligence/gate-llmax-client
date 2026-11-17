@@ -190,6 +190,15 @@ class PlanInfo(BaseModel):
     name: str
     description: str | None = None
     sort_order: int = 0
+    region_specifiable: bool = Field(default=False, description="Callable as `plan@region` to route only in that region.")
+
+
+PLAN_REGION_SEPARATOR = "@"
+
+
+def plan_in_region(plan: str, region: str | None) -> str:
+    """``plan`` pinned to ``region`` (``base@us``): Gate routes only there when the plan is region-specifiable, else ignores it."""
+    return f"{plan}{PLAN_REGION_SEPARATOR}{region.strip().lower()}" if region else plan
 
 
 class ModelPlanRow(BaseModel):

@@ -23,6 +23,7 @@ from gate_llmax.models.config import (
     ResolvedDeployment,
     ResolveResponse,
     VideoLimits,
+    plan_in_region,
 )
 from gate_llmax.models.decision import DecisionAnswer, DecisionQuestion, DecisionRequest, DecisionResponse
 from gate_llmax.models.dubbing import DubbingRequest, DubbingResponse
@@ -286,5 +287,6 @@ __all__ = [
     "count",
     "estimate_input_tokens",
     "new_call_id",
+    "plan_in_region",
     "select_best",
 ]

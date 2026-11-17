@@ -24,7 +24,15 @@ from gate_llmax.models.audio import AudioRequest, AudioResponse
 from gate_llmax.models.audio_gen import AudioGenMode, AudioGenRequest, AudioGenResponse, AudioMode, DialogueTurn
 from gate_llmax.models.audio_isolation import AudioIsolationRequest, AudioIsolationResponse
 from gate_llmax.models.byok import ByokPlan
-from gate_llmax.models.config import ExtraAttributeName, FallbackHealthRow, ModelInfo, ModelPlanRow, PlanInfo, ResolveResponse
+from gate_llmax.models.config import (
+    ExtraAttributeName,
+    FallbackHealthRow,
+    ModelInfo,
+    ModelPlanRow,
+    PlanInfo,
+    ResolveResponse,
+    plan_in_region,
+)
 from gate_llmax.models.decision import DecisionQuestion, DecisionRequest, DecisionResponse
 from gate_llmax.models.dubbing import DubbingRequest, DubbingResponse
 from gate_llmax.models.embed import EmbedRequest, EmbedResponse
@@ -234,7 +242,8 @@ class LLMClient:
                 per-call ``.hosting(...)`` overrides it. ``None`` applies no filter.
             default_plan: Default plan — a named hosting-provider preset (e.g. ``"omicron"``) —
                 applied to every ``.request(...)`` call; resolves to the plan's hosting providers
-                server-side, and an explicit ``.hosting(...)`` wins. ``None`` = no plan.
+                server-side, and an explicit ``.hosting(...)`` wins. ``"base@us"`` (see ``plan_in_region``)
+                routes only in that region when the plan is region-specifiable. ``None`` = no plan.
             byok_plan: Optional ``ByokPlan`` bound to every request as the ``X-Gate-Byok-Plan``
                 header, so Gate serves the plan's models and group→model table on the caller's own
                 endpoint and (per its ``cover_missing`` / ``cover_failure`` flags) falls back to
@@ -342,10 +351,10 @@ class LLMClient:
         view._seed_routing_token = seed_to_token(seed_routing)  # noqa: SLF001
         return view
 
-    def set_plan(self, plan: str | None, extra_providers: list[str] | None = None) -> Self:
-        """Return a view of this client bound to *plan*, widening routing with *extra_providers* when given (else kept)."""
+    def set_plan(self, plan: str | None, extra_providers: list[str] | None = None, *, region: str | None = None) -> Self:
+        """Return a view bound to *plan* (in *region* when given), widening routing with *extra_providers* when given (else kept)."""
         view = self._view()
-        view._default_plan = plan  # noqa: SLF001
+        view._default_plan = plan_in_region(plan, region) if plan else plan  # noqa: SLF001
         if extra_providers is not None:
             view._default_hosting_providers = list(extra_providers)  # noqa: SLF001
         return view
