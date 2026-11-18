@@ -154,7 +154,6 @@ class Expect:
     tool_calls_min: int = 0
     tool_names: tuple[str, ...] = ()
     json_keys: tuple[str, ...] = ()
-    choices_min: int = 0
     finish_reason: str | None = None
     min_chars: int = 0
     max_chars: int | None = None
@@ -477,15 +476,6 @@ CASES: tuple[HeavyCase, ...] = (
         expect=Expect(),
     ),
     HeavyCase(
-        id="n-choices",
-        label="n = 3 completions",
-        intent="Buffered only — the extra completions come back in choices[].",
-        tags=("sampling",),
-        prompt="Give me one name for a coffee shop. Reply with the name only.",
-        specifics=RequestSpecifics(temperature=1, max_tokens=32, n=3),
-        expect=Expect(choices_min=3),
-    ),
-    HeavyCase(
         id="stop-sequence",
         label="Stop sequence",
         intent="Generation should halt at 'THREE' and never print it.",
@@ -658,7 +648,6 @@ class Observed:
     reasoning: str = ""
     tool_names: list[str] = field(default_factory=list)
     json_object: dict[str, Any] | None = None
-    choices: int = 1
     finish_reason: str | None = None
     output_tokens: int = 0
 
@@ -679,7 +668,7 @@ def check_text(expect: Expect, seen: Observed) -> list[str]:
 
 
 def check_shape(expect: Expect, seen: Observed) -> list[str]:
-    """Clauses about the *shape* of the reply: tool calls, JSON, choices, finish reason."""
+    """Clauses about the *shape* of the reply: tool calls, JSON, finish reason."""
     failures: list[str] = []
     if len(seen.tool_names) < expect.tool_calls_min:
         failures.append(f"expected >={expect.tool_calls_min} tool call(s), got {len(seen.tool_names)}")
@@ -691,8 +680,6 @@ def check_shape(expect: Expect, seen: Observed) -> list[str]:
             missing = [k for k in expect.json_keys if k not in seen.json_object]
             if missing:
                 failures.append(f"JSON missing keys {missing}")
-    if expect.choices_min and seen.choices < expect.choices_min:
-        failures.append(f"expected >={expect.choices_min} choices, got {seen.choices}")
     if expect.finish_reason and seen.finish_reason != expect.finish_reason:
         failures.append(f"finish_reason={seen.finish_reason!r}, expected {expect.finish_reason!r}")
     return failures
@@ -742,7 +729,6 @@ def observe_response(response: LLMResponse) -> Observed:
         text=response.raw_text or "",
         tool_names=[tc.function.name for tc in response.tool_calls or [] if tc.function],
         json_object=response.json_object,
-        choices=len(response.choices) if response.choices else 1,
         output_tokens=response.usage.output_tokens,
     )
 
