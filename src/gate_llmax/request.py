@@ -145,13 +145,25 @@ def _accumulate_tool_call_deltas(acc: dict[int, ToolCall], deltas: list[Any]) ->
             slot.function.arguments += fn["arguments"]
 
 
+def parse_tool_args(tool_call: ToolCall) -> dict[str, Any] | str:
+    """The call's arguments as an object, or the error the model reads when they are valid JSON of another type."""
+    try:
+        args = json.loads(tool_call.function.arguments or "{}")
+    except json.JSONDecodeError:
+        return {}
+    if isinstance(args, dict):
+        return args
+    return (
+        f"Error: the arguments of `{tool_call.function.name}` must be a JSON object of named parameters, "
+        f"not a JSON {type(args).__name__}. Call it again with an object."
+    )
+
+
 async def _run_tool_call(tool_call: ToolCall, executor: ToolExecutor) -> tuple[ToolCall, str]:
     """Parse one tool call's arguments and run it through ``executor``."""
-    raw_args = tool_call.function.arguments or "{}"
-    try:
-        args = json.loads(raw_args)
-    except json.JSONDecodeError:
-        args = {}
+    args = parse_tool_args(tool_call)
+    if isinstance(args, str):
+        return tool_call, args
     output = await executor(tool_call.id, tool_call.function.name, args)
     return tool_call, output
 
@@ -163,10 +175,10 @@ async def _drain_streaming_tool(
 ) -> None:
     """Run one streaming tool, pushing each item to ``queue``; a trailing ``None`` signals done."""
     try:
-        try:
-            args = json.loads(tool_call.function.arguments or "{}")
-        except json.JSONDecodeError:
-            args = {}
+        args = parse_tool_args(tool_call)
+        if isinstance(args, str):
+            await queue.put((tool_call, ToolResult(output=args)))
+            return
         async for item in executor(tool_call.id, tool_call.function.name, args):
             await queue.put((tool_call, item))
     finally:

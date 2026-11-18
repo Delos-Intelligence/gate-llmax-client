@@ -17,19 +17,18 @@ from gate_llmax.models.messages import ImageMessage, TextMessage
 from gate_llmax.models.response import StreamChunk
 from gate_llmax.types import JsonDict
 
-_TOOL_DELTA: list[JsonDict] = [{"index": 0, "id": "call_1", "function": {"name": "search", "arguments": '{"q": "x"}'}}]
 
-
-def _scripted_stream() -> Any:
+def _scripted_stream(arguments: str = '{"q": "x"}') -> Any:
     """Stub for ``LLMClient._stream``: the first turn calls a tool, later turns answer."""
     state = {"i": 0}
+    delta: list[JsonDict] = [{"index": 0, "id": "call_1", "function": {"name": "search", "arguments": arguments}}]
 
     async def _stream(self: LLMClient, request: Any, *, priority: int = 0) -> AsyncIterator[StreamChunk]:  # noqa: ARG001
         turn = state["i"]
         state["i"] += 1
         if turn == 0:
             yield StreamChunk(text="thinking... ")
-            yield StreamChunk(tool_calls_delta=_TOOL_DELTA)
+            yield StreamChunk(tool_calls_delta=delta)
         else:
             yield StreamChunk(text="final answer")
 
@@ -142,6 +141,32 @@ def test_a_raising_executor_surfaces_its_error(monkeypatch: Any) -> None:
     )
     with pytest.raises(RuntimeError, match="tool blew up"):
         asyncio.run(asyncio.wait_for(_collect(builder), timeout=2))
+
+
+def test_non_object_arguments_reach_the_model_not_the_executor(monkeypatch: Any) -> None:
+    """Valid JSON that is not an object is answered with an error the model reads; the executor never sees it."""
+    sent: list[Any] = []
+    scripted = _scripted_stream('[{"q": "x"}]')
+
+    async def _stream(self: LLMClient, request: Any, *, priority: int = 0) -> AsyncIterator[StreamChunk]:
+        sent.append([message.model_copy(deep=True) for message in request.messages])
+        async for chunk in scripted(self, request, priority=priority):
+            yield chunk
+
+    monkeypatch.setattr(client_mod.LLMClient, "_stream", _stream)
+    called: list[Any] = []
+
+    async def executor(tool_id: str, name: str, args: dict) -> AsyncIterator[ToolStreamItem]:  # noqa: ARG001
+        called.append(args)
+        yield ToolResult(output="never")
+
+    client = LLMClient(api_key="k", base_url="http://x")
+    builder = client.request(prompt="hi", operation="test_streaming_tools").with_tools(
+        [{"type": "function", "function": {"name": "search"}}], stream_executor=executor
+    )
+    assert asyncio.run(asyncio.wait_for(_collect(builder), timeout=2)) == "thinking... final answer"
+    assert called == []
+    assert "must be a JSON object" in str(sent[1][-1].content)
 
 
 def _builder_with_a_slow_tool(events: list[str]) -> Any:

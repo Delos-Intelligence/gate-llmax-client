@@ -50,14 +50,17 @@ from gate_llmax.exceptions import LLMAuthError, LLMError
 from gate_llmax.models.config import ModelInfo, ResolvedDeployment
 
 try:
-    from mcp.server.fastmcp import FastMCP
+    try:
+        from mcp.server.mcpserver import MCPServer
+    except ModuleNotFoundError:
+        from mcp.server.fastmcp import FastMCP as MCPServer  # ty: ignore[unresolved-import]  # mcp 1.x name
 except ModuleNotFoundError as exc:  # pragma: no cover - import guard
     raise SystemExit(
         "The Gate MCP server needs the 'agent' extra. Install it with:\n"
         '    uv add "gate-llmax[agent]"   (or)   pip install "gate-llmax[agent]"'
     ) from exc
 
-mcp = FastMCP("gate-llmax")
+mcp = MCPServer("gate-llmax")
 
 _DEV_HINT = "This tool needs a dev API key. Set GATE_API_KEY to a key whose `dev` flag is true."
 
