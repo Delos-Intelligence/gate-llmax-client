@@ -153,9 +153,11 @@ Every cosmos connector is a gate row: its tile, sub-agent and tools all come fro
 - **Add**: the vendor's **official** hosted MCP server only, from its developer docs (none → a handmade module, a gate PR
   first). `create_mcp_server` makes the row disabled, with icon, shelf, members' description and agent instructions;
   probe it with `mcp_server_tools` (a 401 is expected on a row members connect, or on Delos's key), then `enable_mcp_server`.
-- **Edit**: `update_mcp_server` merges `config` and replaces every other field it is given; `append_instructions` adds a
-  pitfall without retyping the rest. A change is live for every org within about five minutes.
-- **Not from here** (the gate admin, on Evan's go): deleting a row, Delos's own key, prices, the Pipedream/Delos switch, drafts.
+- **Edit**: `update_mcp_server` merges `config` and `translations` (nested objects included) and replaces the other fields
+  it is given; `append_instructions` adds a pitfall without retyping the rest. A change is live for every org within about
+  five minutes, and an enabled row never loses its icon, shelf, description or instructions.
+- **Not from here** (the gate admin, on the catalogue owner's go): deleting a row, Delos's own key, secrets, prices, the
+  Pipedream/Delos switch, drafts, and what reaches every worker (`delos_key_for`, `auto_connect_all`, `suggested_for`).
 
 ### Giving a worker template a connector (worker auto-connect)
 
@@ -163,8 +165,8 @@ Every cosmos connector is a gate row: its tile, sub-agent and tools all come fro
    (`auth_type: none`, nothing for anyone to connect).
 2. In cosmos, `/admin/worker-templates` → Intégrations → « Connectés automatiquement » (`worker_templates.auto_connect_mcps`).
    That list decides; the row's `config.delos_key_for` is only the fallback of a template that never saved one, so it is not needed.
-3. Checking a row there applies to **every worker already hired** from that template (Sophie had ~1 750 in Nov 2026): ask Evan first.
-4. Every call then spends Delos's account: agree on how it is billed with Evan before checking it.
+3. Checking a row there applies to **every worker already hired** from that template, often thousands: ask the catalogue owner first.
+4. Every call then spends Delos's own vendor account: agree with the catalogue owner on how it is billed before checking it.
 5. One account serves every org. A handmade module keeps them apart (`is_members_own_key`); a builtin row cannot, so its tools
    listing the account's searches, lists or jobs show each org the others'. Keep such a vendor off a shared key, or wrap it in a
    handmade module that drops those tools.

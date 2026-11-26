@@ -1416,9 +1416,9 @@ class LLMClient:
         _raise_for_status(response)
         return list(response.json())
 
-    async def list_mcp_server_rows(self) -> list[dict[str, Any]]:
-        """GET /admin/mcp/servers — every MCP catalogue row as stored, config included. Requires an ``mcp_edit`` key."""
-        response = await self._http.get("/admin/mcp/servers")
+    async def list_mcp_server_rows(self, *, slug: str | None = None) -> list[dict[str, Any]]:
+        """GET /admin/mcp/servers — the MCP catalogue rows as stored (one with ``slug``), config included. Requires an ``mcp_edit`` key."""
+        response = await self._http.get("/admin/mcp/servers", params={"slug": slug} if slug else None)
         _raise_for_status(response)
         return list(response.json())
 

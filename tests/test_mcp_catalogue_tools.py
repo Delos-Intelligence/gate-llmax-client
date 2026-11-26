@@ -31,7 +31,9 @@ _ROW = {
 _CATEGORY = {"id": "cat-1", "slug": "sales", "name": "Sales", "sort_order": 1}
 
 
-def gateway(monkeypatch: pytest.MonkeyPatch, rows: list[dict[str, Any]] | None = None) -> list[tuple[str, str, Any]]:
+def gateway(
+    monkeypatch: pytest.MonkeyPatch, rows: list[dict[str, Any]] | None = None, *, icon_status: int = 200
+) -> list[tuple[str, str, Any]]:
     """Point the tools at a fake gate holding ``rows``; returns every (method, path, body) it was sent."""
     sent: list[tuple[str, str, Any]] = []
     stored = rows if rows is not None else [dict(_ROW)]
@@ -40,6 +42,8 @@ def gateway(monkeypatch: pytest.MonkeyPatch, rows: list[dict[str, Any]] | None =
         body = json.loads(request.content) if request.content else None
         sent.append((request.method, request.url.path, body))
         path = request.url.path
+        if path.endswith("/fetch-icon"):
+            return httpx.Response(icon_status, json={"detail": "not a PNG or SVG"})
         if path in {"/admin/mcp/servers", "/v1/mcp/servers"} and request.method == "GET":
             return httpx.Response(200, json=stored)
         if path == "/admin/mcp/categories":
@@ -64,7 +68,15 @@ async def test_the_listing_keeps_its_documented_fields_without_icons(monkeypatch
     """Base64 icons made the whole catalogue 3.4 MB, too big for an agent to read."""
     gateway(monkeypatch)
     [row] = await mcp_server.list_mcp_servers()
-    assert set(row) == {"slug", "name", "type", "enabled", "description", "has_delos_key", "delos_key_for"}
+    assert set(row) == {"slug", "name", "type", "enabled", "auth_type", "url", "description", "has_delos_key", "delos_key_for"}
+
+
+async def test_a_json_row_shows_its_spec_summed_up_and_a_listed_secret_masked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A full OpenAPI spec would cost the agent tens of thousands of tokens for one read."""
+    spec = {"info": {"title": "Acme API"}, "paths": {"/a": {}, "/b": {}}}
+    gateway(monkeypatch, [{**_ROW, "type": "json", "config": {"openapi": spec, "private_keys": ["k1", "k2"]}}])
+    config = (await mcp_server.get_mcp_server("pipecorn"))["config"]
+    assert config == {"openapi": {"title": "Acme API", "paths": 2}, "private_keys": "***"}
 
 
 async def test_a_row_is_read_with_its_secrets_masked_and_its_icon_as_a_flag(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -107,6 +119,33 @@ async def test_a_creation_the_admin_keeps_or_that_lacks_its_endpoint_sends_nothi
     assert _writes(sent) == []
 
 
+async def test_a_json_row_whose_spec_does_not_build_is_not_created(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent = gateway(monkeypatch)
+    out = await mcp_server.create_mcp_server(
+        "acme",
+        "Acme",
+        "json",
+        "Acme CRM.",
+        "Use search first.",
+        "sales",
+        config={"base_url": "https://api.acme.com", "openapi": {"paths": {}}},
+    )
+    assert "error" in out
+    assert [path for _, path, _ in _writes(sent)] == ["/admin/mcp/servers/validate"]
+
+
+async def test_a_key_without_mcp_edit_is_told_which_flag_it_lacks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The gate answers 403 to a dev key on /admin/mcp: the agent must learn it needs the mcp_edit flag."""
+
+    def client() -> LLMClient:
+        refuse = httpx.MockTransport(lambda _: httpx.Response(403, json={"detail": "Forbidden"}))
+        return LLMClient(api_key="k", base_url=BASE_URL, httpx_aclient=httpx.AsyncClient(base_url=BASE_URL, transport=refuse))
+
+    monkeypatch.setattr(mcp_server, "_client", client)
+    out = await mcp_server.get_mcp_server("pipecorn")
+    assert "mcp_edit" in out["error"]
+
+
 async def test_appended_instructions_keep_the_current_ones(monkeypatch: pytest.MonkeyPatch) -> None:
     """A pitfall is added without retyping a long instruction block."""
     sent = gateway(monkeypatch)
@@ -118,7 +157,16 @@ async def test_appended_instructions_keep_the_current_ones(monkeypatch: pytest.M
 
 @pytest.mark.parametrize(
     "arguments",
-    [{"config": {"delos_key_for": ["sophie"]}}, {"instructions": "new", "append_instructions": "more"}, {"category": "unknown"}],
+    [
+        {"config": {"delos_key_for": ["sophie"]}},
+        {"config": {"auto_connect_all": True}},
+        {"config": {"suggested_for": ["sophie"]}},
+        {"config": {"oauth": {"client_secret": "x"}}},
+        {"config": {"headers": {"Api-Version": "1"}}},
+        {"instructions": "new", "append_instructions": "more"},
+        {"category": "unknown"},
+        {"description": "  "},
+    ],
 )
 async def test_an_update_the_admin_keeps_or_that_cannot_apply_sends_nothing(
     monkeypatch: pytest.MonkeyPatch, arguments: dict[str, Any]
@@ -128,6 +176,39 @@ async def test_an_update_the_admin_keeps_or_that_cannot_apply_sends_nothing(
     out = await mcp_server.update_mcp_server("pipecorn", **arguments)
     assert "error" in out
     assert _writes(sent) == []
+
+
+async def test_a_partial_oauth_change_keeps_the_other_hints(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The gate merges config one level deep: sent alone, a scope would wipe the authorize and token URLs."""
+    sent = gateway(monkeypatch)
+    await mcp_server.update_mcp_server("pipecorn", config={"oauth": {"scope": "read"}})
+    [(_, _, body)] = _writes(sent)
+    assert body["config"]["oauth"] == {"client_secret": "s3cr3t", "token_url": "https://t", "scope": "read"}
+
+
+async def test_a_logo_the_gate_refuses_still_reports_the_created_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reported as a failure, the creation was retried and refused on its own slug."""
+    sent = gateway(monkeypatch, icon_status=415)
+    out = await mcp_server.create_mcp_server(
+        "acme",
+        "Acme",
+        "builtin",
+        "Acme CRM.",
+        "Use search first.",
+        "sales",
+        url="https://mcp.acme.com/mcp",
+        auth_type="oauth",
+        icon_url="https://acme.com/logo.jpg",
+    )
+    assert (out["created"], "icon_error" in out) == ("acme", True)
+    assert _writes(sent)[-1] == ("PATCH", "/admin/mcp/servers/row-2", {"icon": None})
+
+
+async def test_a_row_its_client_serves_is_enabled_without_instructions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The gate's card rule exempts it: its client tells its agent in its own words."""
+    sent = gateway(monkeypatch, [{**_ROW, "enabled": False, "instructions": None, "config": {"served_by": "client"}}])
+    await mcp_server.enable_mcp_server("pipecorn")
+    assert _writes(sent) == [("PATCH", "/admin/mcp/servers/row-1", {"enabled": True})]
 
 
 async def test_a_row_without_an_icon_is_not_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
