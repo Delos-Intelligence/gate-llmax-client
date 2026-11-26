@@ -220,6 +220,11 @@ class StreamMeter:
         """Whether Gate reported any leg."""
         return any(leg.report is not None for leg in self.legs)
 
+    @property
+    def unreported(self) -> list[Leg]:
+        """The legs Gate never reported: dropped, cut off or left before their usage frame."""
+        return [leg for leg in self.legs if leg.report is None]
+
     def owes_usage(self, error: BaseException | None) -> bool:
         """Whether a dispatch leaving with ``error`` (``None`` for its end) owes a usage.
 
@@ -236,21 +241,18 @@ class StreamMeter:
         return self.chunks > 0 or self.resumed
 
     def reported_usage(self, *, model: str, operation: str, call_id: UUID) -> RawUsage:
-        """The legs Gate reported, summed, unflagged.
-
-        Known gap: a leg Gate never reported (one dropped before its usage frame) adds nothing, so its prompt
-        and output go uncounted, as before per-leg metering; Gate's log still has it.
-        """
+        """The legs Gate reported, summed, unflagged; the legs it did not are estimated apart (``RawUsage.unreported``)."""
         usages = [chunk_usage(leg.report, model=model, operation=operation, call_id=call_id) for leg in self.legs if leg.report is not None]
         total = usages[0]
         for usage in usages[1:]:
             total += usage
         return total.model_copy(update={"finish_reason": self.finish_reason, "native_finish_reason": self.native_finish_reason})
 
-    def estimated_tokens(self, prompt_tokens: int) -> tuple[int, int]:
-        """``(input, output)`` as if Gate billed each leg: its prompt plus the text it re-sent, and what it delivered."""
-        input_tokens = sum(prompt_tokens + _tokens(leg.prefix) for leg in self.legs)
-        output_tokens = sum(_tokens("".join(leg.output)) for leg in self.legs)
+    def estimated_tokens(self, prompt_tokens: int, legs: list[Leg] | None = None) -> tuple[int, int]:
+        """``(input, output)`` as if Gate billed each of ``legs`` (all by default): its prompt and re-sent text, and what it delivered."""
+        legs = self.legs if legs is None else legs
+        input_tokens = sum(prompt_tokens + _tokens(leg.prefix) for leg in legs)
+        output_tokens = sum(_tokens("".join(leg.output)) for leg in legs)
         return input_tokens, output_tokens
 
 

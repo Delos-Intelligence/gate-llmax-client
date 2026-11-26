@@ -325,12 +325,7 @@ async def test_disable_usage_fires_nothing_on_any_exit() -> None:
 # --- legs: a resumed stream is one dispatch -------------------------------------------------------
 
 
-async def test_known_gap_a_resumed_stream_reported_on_its_last_leg_bills_that_leg_alone() -> None:
-    """Known gap: the dropped leg's prompt and output are not counted, so the usage is the last leg alone, unflagged.
-
-    Same money as before per-leg metering (the client fired the last usage frame); splitting the reported and
-    estimated parts on ``RawUsage`` is tracked separately.
-    """
+async def test_a_resumed_stream_reported_on_its_last_leg_bills_that_leg_and_estimates_the_dropped_one_apart() -> None:
     gate = Gate(scripted(stream(text("Roses are "), end="drop"), stream(text("red."), sse(frame(20, 3)))))
     client, usages = make_client(gate)
 
@@ -338,9 +333,27 @@ async def test_known_gap_a_resumed_stream_reported_on_its_last_leg_bills_that_le
 
     assert gate.ids[0] == gate.ids[1]
     usage = usages.one
+    # Leg 2 is Gate's report, billed as real ...
     assert not usage.estimated
     assert (usage.input_tokens, usage.output_tokens, usage.total_cost) == (20, 3, 0.023)
     assert usage.call_id == gate.ids[0]
+    # ... and leg 1, dropped before its usage frame, is an estimate beside it under the same call id: its prompt and what it delivered.
+    assert usage.unreported is not None
+    assert_estimate(usage.unreported, input_tokens=PROMPT_TOKENS, output_tokens=count_text("Roses are "), price=PRICES["m"])
+    assert usage.unreported.call_id == gate.ids[0]
+    assert client.total_usage == 0.023  # a run billing total_usage bills Gate's report alone
+
+
+async def test_a_resumed_stream_with_usage_chunks_adds_the_dropped_leg_s_estimate() -> None:
+    gate = Gate(scripted(stream(text("Roses are "), end="drop"), stream(text("red."), sse(frame(20, 3)))))
+    client, usages = make_client(gate)
+
+    [c async for c in client.request(prompt=PROMPT, operation="t").call_stream("m", usage_chunks=True)]
+
+    reported, estimate = usages.seen
+    assert (reported.estimated, reported.input_tokens, reported.output_tokens) == (False, 20, 3)
+    assert_estimate(estimate, input_tokens=PROMPT_TOKENS, output_tokens=count_text("Roses are "), price=PRICES["m"])
+    assert reported.call_id == estimate.call_id == gate.ids[0]
 
 
 async def test_a_resumed_stream_reported_on_both_legs_fires_their_sum() -> None:
@@ -351,6 +364,7 @@ async def test_a_resumed_stream_reported_on_both_legs_fires_their_sum() -> None:
 
     usage = usages.one
     assert not usage.estimated
+    assert usage.unreported is None
     assert (usage.input_tokens, usage.output_tokens, usage.duration_ms) == (30, 7, 200)
     assert usage.total_cost == pytest.approx(0.037)
 

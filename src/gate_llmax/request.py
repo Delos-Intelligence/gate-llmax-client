@@ -673,16 +673,27 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
         for response in responses:
             await self._bill(response.usage)
 
-    async def _bill_stream(self, meter: StreamMeter, model: str, call_id: UUID) -> None:
-        """Bill a streamed dispatch on its way out: the legs Gate reported, else an estimate of every leg."""
-        if meter.reported:
-            usage = meter.reported_usage(model=model, operation=self.operation, call_id=call_id)
-        else:
+    async def _bill_stream(self, meter: StreamMeter, model: str, call_id: UUID, *, reports_fired: bool = False) -> None:
+        """Bill a streamed dispatch on its way out: the legs Gate reported, with an estimate of the legs it did not apart.
+
+        When Gate reported no leg, the usage is that estimate. ``reports_fired`` (``usage_chunks``) means
+        Gate's reports went out as they came, so only the estimate is left to fire.
+        """
+        unreported = meter.unreported
+        estimate = None
+        if unreported:
             prompt = estimate_input_tokens(self.system_prompt, self.messages, self.images)
-            input_tokens, output_tokens = meter.estimated_tokens(prompt)
-            usage = await self._estimate(
+            input_tokens, output_tokens = meter.estimated_tokens(prompt, unreported)
+            estimate = await self._estimate(
                 model, call_id, input_tokens, output_tokens, served=meter.served_model, finish_reason=meter.finish_reason
             )
+        if meter.reported and not reports_fired:
+            usage = meter.reported_usage(model=model, operation=self.operation, call_id=call_id)
+            usage.unreported = estimate
+        elif estimate is not None:
+            usage = estimate
+        else:
+            return
         await self._bill(usage)
 
     async def _estimate_timeouts(self, responses: Sequence[LLMResponse]) -> None:
@@ -760,8 +771,9 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
 
         The usage fires on every exit of a dispatch Gate received: the end, the caller stopping
         (``aclose()``), a cancellation, a timeout, a cut-off, or an error after chunks arrived. It
-        is Gate's report, summed over the legs of a resumed stream that Gate reported (a leg dropped
-        before its report is not counted); when Gate reported no leg, an estimate
+        is Gate's report, summed over the legs of a resumed stream that Gate reported; the legs it
+        did not report (dropped before their usage frame) ride beside it as an estimate
+        (``RawUsage.unreported``). When Gate reported no leg, the usage is that estimate
         (``estimated=True``): the prompt each leg was sent and the output it delivered, at the
         model's list price. A caller that ``break``s out of ``async for`` without closing
         the stream leaves it to the event loop, so its usage fires when the loop finalizes it.
@@ -819,10 +831,10 @@ class RequestBuilder[ResponseT: LLMResponse](MediaBuilder[LLMResponse]):
             error = exc
             raise
         finally:
-            # One usage per dispatch, however it ends; ``usage_chunks`` already fired Gate's, so it only adds a missing estimate.
+            # One usage per dispatch, however it ends; ``usage_chunks`` already fired Gate's, so it only adds the missing estimate.
             meter = stream.meter
-            if not disable_usage and meter.owes_usage(error) and not (usage_chunks and meter.reported):
-                await settle(self._bill_stream(meter, model, call_id), quiet=error is not None)
+            if not disable_usage and meter.owes_usage(error):
+                await settle(self._bill_stream(meter, model, call_id, reports_fired=usage_chunks), quiet=error is not None)
 
     def stream(
         self,
