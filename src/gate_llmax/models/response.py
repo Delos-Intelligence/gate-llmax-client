@@ -97,6 +97,9 @@ class RawUsage(BaseModel):
     call_id: UUID | None = None  # the Gate request reported (its X-Gate-Call-Id); a parallel target is one request, so its answers share it
     finish_reason: str = ""  # why generation stopped (stop/length/tool_calls/…); "length" on an empty answer means the cap was hit
     native_finish_reason: str = ""  # the provider's own reason before OpenAI-vocab flattening (Anthropic "refusal", Gemini "RECITATION", …)
+    # A resumed stream's legs Gate never reported, estimated (``estimated=True``) under the same call id, beside the legs it reported
+    # above; kept apart so the reported part bills as Gate's report and this one as an estimate. Not in ``total_cost``.
+    unreported: RawUsage | None = None
 
     @computed_field
     @property
@@ -132,7 +135,15 @@ class RawUsage(BaseModel):
             call_id=self.call_id or other.call_id,
             finish_reason=self.finish_reason or other.finish_reason,
             native_finish_reason=self.native_finish_reason or other.native_finish_reason,
+            unreported=_either_or_both(self.unreported, other.unreported),
         )
+
+
+def _either_or_both(one: RawUsage | None, other: RawUsage | None) -> RawUsage | None:
+    """The sum of two optional usages: either one alone, both added, or ``None``."""
+    if one is None:
+        return other
+    return one if other is None else one + other
 
 
 class StreamChunkDelta(BaseModel):

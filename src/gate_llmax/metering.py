@@ -19,8 +19,11 @@ from typing import Any, NamedTuple, Self
 from uuid import UUID
 
 import httpx
+from pydantic import BaseModel, ValidationError
 
 from .exceptions import LLMConnectionError, LLMTimeoutError
+from .models.config import ModelInfo
+from .models.images import ImageRequest
 from .models.response import ROUND, RawUsage, StreamChunk
 from .tokens import count_text
 
@@ -40,11 +43,57 @@ LOST_AFTER_SEND = (httpx.ReadError, httpx.RemoteProtocolError)
 type PriceKey = tuple[str, str | None]
 
 
+class ImagePrice(BaseModel):
+    """What Gate bills one image call, in USD, from the catalog's ``extra_attributes['media_price']`` (Gate's ``pricing/image.py``)."""
+
+    by_quality: dict[str, float] | None = None
+    per_unit: float | None = None
+    per_megapixel: float | None = None
+    task: bool = False  # the model works on its input images (background removal): ``per_unit`` per input image
+
+    @classmethod
+    def of(cls, info: ModelInfo) -> ImagePrice | None:
+        """The image price ``info`` lists, or ``None`` when it lists none the client can read."""
+        raw = info.extra_attributes.get("media_price")
+        if not isinstance(raw, dict):
+            return None
+        limits = info.traits.image
+        try:
+            return cls.model_validate({**raw, "task": limits is not None and (limits.task or "generate") != "generate"})
+        except ValidationError:
+            return None
+
+    def cost(self, request: ImageRequest) -> float:
+        """What Gate bills ``request``, as asked (Gate prices it once clamped to the model, so a clamped size can differ)."""
+        n = max(1, request.n)
+        if self.task:
+            return round((self.per_unit or 0.0) * len(request.images or []), 8)
+        if self.by_quality:
+            return (self.by_quality.get(request.quality) or self.by_quality.get("medium") or 0.0) * n
+        if self.per_megapixel is not None:
+            width, height = request.size or (1024, 1024)
+            return round(self.per_megapixel * width * height / 1_000_000 * n, 8)
+        if self.per_unit is not None:
+            return self.per_unit * image_units(request)
+        return 0.0
+
+
+def image_units(request: ImageRequest) -> int:
+    """An image call's units as Gate counts them on its usage (``input_tokens``): 1, +1 at high quality, +1 off 1024x1024, per image."""
+    base = 1
+    if request.quality == "high":
+        base += 1
+    if request.size is not None and request.size != (1024, 1024):
+        base += 1
+    return base * max(1, request.n)
+
+
 class ListPrice(NamedTuple):
-    """A model's list price in USD per 1M tokens, as Gate's catalog states it."""
+    """A model's list price in USD per 1M tokens, as Gate's catalog states it, and its image price when it lists one."""
 
     input: float
     output: float
+    image: ImagePrice | None = None
 
 
 class PriceCache:
@@ -151,6 +200,22 @@ def estimated_usage(
     )
 
 
+def image_estimate(price: ListPrice | None, request: ImageRequest, *, priced: bool) -> RawUsage:
+    """An image call Gate never reported, flagged ``estimated``: when ``priced``, its units at the model's image price (cost 0 without one).
+
+    Unpriced, it is nothing: a stream left before its first image, which Gate bills nothing.
+    """
+    image = price.image if price is not None else None
+    return RawUsage(
+        model=request.model,
+        input_tokens=image_units(request) if priced else 0,
+        input_cost=round(image.cost(request), ROUND) if priced and image is not None else 0.0,
+        estimated=True,
+        operation=request.operation,
+        call_id=request.call_id,
+    )
+
+
 def timed_out_unsent(error: BaseException) -> bool:
     """Whether ``error`` is an ``LLMTimeoutError`` raised from a timeout before its request left the client: it owes nothing."""
     return isinstance(error, LLMTimeoutError) and isinstance(error.__cause__, UNSENT_TIMEOUTS)
@@ -220,6 +285,11 @@ class StreamMeter:
         """Whether Gate reported any leg."""
         return any(leg.report is not None for leg in self.legs)
 
+    @property
+    def unreported(self) -> list[Leg]:
+        """The legs Gate never reported: dropped, cut off or left before their usage frame."""
+        return [leg for leg in self.legs if leg.report is None]
+
     def owes_usage(self, error: BaseException | None) -> bool:
         """Whether a dispatch leaving with ``error`` (``None`` for its end) owes a usage.
 
@@ -236,21 +306,18 @@ class StreamMeter:
         return self.chunks > 0 or self.resumed
 
     def reported_usage(self, *, model: str, operation: str, call_id: UUID) -> RawUsage:
-        """The legs Gate reported, summed, unflagged.
-
-        Known gap: a leg Gate never reported (one dropped before its usage frame) adds nothing, so its prompt
-        and output go uncounted, as before per-leg metering; Gate's log still has it.
-        """
+        """The legs Gate reported, summed, unflagged; the legs it did not are estimated apart (``RawUsage.unreported``)."""
         usages = [chunk_usage(leg.report, model=model, operation=operation, call_id=call_id) for leg in self.legs if leg.report is not None]
         total = usages[0]
         for usage in usages[1:]:
             total += usage
         return total.model_copy(update={"finish_reason": self.finish_reason, "native_finish_reason": self.native_finish_reason})
 
-    def estimated_tokens(self, prompt_tokens: int) -> tuple[int, int]:
-        """``(input, output)`` as if Gate billed each leg: its prompt plus the text it re-sent, and what it delivered."""
-        input_tokens = sum(prompt_tokens + _tokens(leg.prefix) for leg in self.legs)
-        output_tokens = sum(_tokens("".join(leg.output)) for leg in self.legs)
+    def estimated_tokens(self, prompt_tokens: int, legs: list[Leg] | None = None) -> tuple[int, int]:
+        """``(input, output)`` as if Gate billed each of ``legs`` (all by default): its prompt and re-sent text, and what it delivered."""
+        legs = self.legs if legs is None else legs
+        input_tokens = sum(prompt_tokens + _tokens(leg.prefix) for leg in legs)
+        output_tokens = sum(_tokens("".join(leg.output)) for leg in legs)
         return input_tokens, output_tokens
 
 
