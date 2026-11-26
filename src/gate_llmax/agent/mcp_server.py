@@ -1407,6 +1407,9 @@ async def usage_samples(
     ]
 
 
+_LISTED_FIELDS = ("slug", "name", "type", "enabled", "description", "has_delos_key", "delos_key_for")
+
+
 @mcp.tool()
 async def list_mcp_servers() -> list[dict[str, Any]]:
     """Free. Every MCP server the gateway exposes — slug, name, type (builtin/json/handmade), enabled.
@@ -1414,13 +1417,379 @@ async def list_mcp_servers() -> list[dict[str, Any]]:
     Secret-free: credentials are never returned. This is the MCP counterpart of ``list_deployments``.
 
     Returns:
-        Rows ``{slug, name, type, enabled, description}``, grouped by type. Needs a **dev** key.
+        Rows ``{slug, name, type, enabled, description, has_delos_key, delos_key_for}``, sorted by type then slug.
+        Needs a **dev** key.
     """
     try:
         async with _client() as client:
-            return await client.list_mcp_servers()
+            rows = await client.list_mcp_servers()
     except LLMError as exc:
         return [{"error": _dev_error(exc)}]
+    return sorted(({key: row.get(key) for key in _LISTED_FIELDS} for row in rows), key=lambda r: (str(r["type"]), str(r["slug"])))
+
+
+_MCP_EDIT_HINT = "This tool needs a gate API key with the `mcp_edit` flag, which the gate admin sets on the key."
+# Delos's own key and the template fallback stay in the gate admin: a chat must never place a secret or reach every hired worker.
+_GUARDED_CONFIG_KEYS = frozenset({"delos_key_credential_id", "delos_key_for"})
+_SECRET_ENDINGS = ("secret", "token", "password")
+_ROW_TYPES = frozenset({"builtin", "handmade", "json"})
+_AUTH_TYPES = frozenset({"oauth", "api_key", "none"})
+_ENABLE_NEEDS = ("icon", "category_id", "description", "instructions")
+_LIVE_DELAY = "The gate pods remount within 5 minutes and cosmos rereads the catalogue within 5 minutes."
+
+
+def _edit_error(exc: Exception) -> str:
+    text = str(exc)
+    if isinstance(exc, LLMAuthError) or "403" in text:
+        return f"{_MCP_EDIT_HINT} (gateway said: {text})"
+    return f"Gate request failed: {text}"
+
+
+def _is_secret(key: str) -> bool:
+    lowered = key.lower()
+    return lowered == "api_key" or lowered.endswith(_SECRET_ENDINGS)
+
+
+def _masked(value: Any, key: str = "") -> Any:
+    if isinstance(value, dict):
+        return {k: _masked(v, k) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_masked(item) for item in value]
+    return "***" if value and _is_secret(key) else value
+
+
+def _row_view(row: dict[str, Any]) -> dict[str, Any]:
+    view = {key: _masked(value, key) for key, value in row.items() if key != "icon"}
+    view["has_icon"] = bool(row.get("icon"))
+    return view
+
+
+def _refused_config_keys(config: dict[str, Any] | None) -> list[str]:
+    return sorted(key for key in config or {} if key in _GUARDED_CONFIG_KEYS or _is_secret(key))
+
+
+def _refusal(keys: list[str]) -> str:
+    return f"refused config keys {keys}: Delos keys, secrets and the worker fallback are set in the gate admin, not from here"
+
+
+def _update_problem(instructions: str | None, append_instructions: str | None, config: dict[str, Any] | None) -> str | None:
+    if instructions is not None and append_instructions is not None:
+        return "pass `instructions` (replace) or `append_instructions` (add), not both"
+    refused = _refused_config_keys(config)
+    return _refusal(refused) if refused else None
+
+
+async def _row_by_slug(client: LLMClient, slug: str) -> dict[str, Any] | None:
+    return next((row for row in await client.list_mcp_server_rows() if row.get("slug") == slug), None)
+
+
+async def _category_id(client: LLMClient, category: str) -> str | None:
+    return next((str(c["id"]) for c in await client.list_mcp_categories() if category in {c.get("slug"), str(c.get("id"))}), None)
+
+
+async def _inline_icon(client: LLMClient, server_id: str, icon_url: str) -> None:
+    await client.update_mcp_server(server_id, {"icon": icon_url})
+    await client.fetch_mcp_server_icon(server_id)
+
+
+def _new_row_config(
+    row_type: str,
+    url: str | None,
+    module: str | None,
+    auth_type: str | None,
+    config: dict[str, Any] | None,
+    oauth: dict[str, Any] | None,
+) -> dict[str, Any] | str:
+    """The new row's config, or why it cannot be built."""
+    if row_type not in _ROW_TYPES:
+        return f"type must be one of {sorted(_ROW_TYPES)}"
+    if refused := _refused_config_keys({**(config or {}), **(oauth or {})}):
+        return _refusal(refused)
+    built = dict(config or {})
+    if row_type == "builtin":
+        if not url or auth_type not in _AUTH_TYPES:
+            return "a builtin row needs `url` (the vendor's official MCP endpoint) and `auth_type` (oauth, api_key or none)"
+        built.update(url=url, auth_type=auth_type)
+    elif row_type == "handmade":
+        if not module:
+            return "a handmade row needs `module`, a name in the gate's MODULE_NAMES (its code is a gate PR first)"
+        built["module"] = module
+    elif not (built.get("base_url") and built.get("openapi")):
+        return "a json row needs `config` with `base_url` and `openapi` (the spec of the vendor's REST API)"
+    return built
+
+
+@mcp.tool()
+async def get_mcp_server(slug: str) -> dict[str, Any]:
+    """Free. One catalogue row as the gate stores it: config included, secrets masked, the icon as ``has_icon``.
+
+    Read it before editing: ``update_mcp_server`` replaces every field it is given.
+
+    Args:
+        slug: the row's slug (``list_mcp_servers`` lists them).
+
+    Returns:
+        The row, or ``{"error": ...}``. Needs an **mcp_edit** key.
+    """
+    try:
+        async with _client() as client:
+            row = await _row_by_slug(client, slug)
+    except LLMError as exc:
+        return {"error": _edit_error(exc)}
+    return _row_view(row) if row else {"error": f"no MCP server with slug {slug!r}"}
+
+
+@mcp.tool()
+async def list_mcp_categories() -> list[dict[str, Any]]:
+    """Free. The shelves a catalogue row sits on: pass a ``slug`` as ``category`` when creating or updating a row.
+
+    Returns:
+        Rows ``{slug, name, id}`` in shelf order. Needs an **mcp_edit** key.
+    """
+    try:
+        async with _client() as client:
+            categories = await client.list_mcp_categories()
+    except LLMError as exc:
+        return [{"error": _edit_error(exc)}]
+    ordered = sorted(categories, key=lambda c: c.get("sort_order") or 0)
+    return [{"slug": c.get("slug"), "name": c.get("name"), "id": c.get("id")} for c in ordered]
+
+
+@mcp.tool()
+async def mcp_server_tools(slug: str) -> dict[str, Any]:
+    """Free. What the gate lists for a row, built the way the pod mounts it: probe a row before enabling it.
+
+    A row whose members connect their own account (oauth, api_key) or that runs on Delos's key answers
+    ``Upstream HTTP 401`` here: the admin builds the listing with the row's stored credential, so that 401 is
+    expected. ``Name or service not known`` or a 404 means the URL is wrong.
+
+    Args:
+        slug: the row's slug.
+
+    Returns:
+        ``{count, tools: [{name, description}]}`` or ``{"error": ...}``. Needs an **mcp_edit** key.
+    """
+    try:
+        async with _client() as client:
+            row = await _row_by_slug(client, slug)
+            if row is None:
+                return {"error": f"no MCP server with slug {slug!r}"}
+            tools = await client.mcp_server_tools(str(row["id"]))
+    except LLMError as exc:
+        return {"error": _edit_error(exc)}
+    listed = [{"name": t.get("name"), "description": (t.get("description") or "").split("\n")[0][:160]} for t in tools]
+    return {"count": len(listed), "tools": listed}
+
+
+@mcp.tool()
+async def mcp_server_revisions(slug: str, limit: int = 10) -> list[dict[str, Any]]:
+    """Free. Who changed which fields of a row, newest first: an email for the gate admin, a key name for a script.
+
+    Args:
+        slug: the row's slug.
+        limit: how many revisions to return.
+
+    Returns:
+        Rows ``{at, action, actor, changed}``. Needs an **mcp_edit** key.
+    """
+    try:
+        async with _client() as client:
+            row = await _row_by_slug(client, slug)
+            if row is None:
+                return [{"error": f"no MCP server with slug {slug!r}"}]
+            revisions = await client.mcp_server_revisions(str(row["id"]))
+    except LLMError as exc:
+        return [{"error": _edit_error(exc)}]
+    return [
+        {"at": r.get("created_at"), "action": r.get("action"), "actor": r.get("actor"), "changed": r.get("changed")}
+        for r in revisions[:limit]
+    ]
+
+
+@mcp.tool()
+async def create_mcp_server(
+    slug: str,
+    name: str,
+    type: str,  # noqa: A002
+    description: str,
+    instructions: str,
+    category: str,
+    *,
+    url: str | None = None,
+    module: str | None = None,
+    auth_type: str | None = None,
+    api_key_header: str | None = None,
+    api_key_bearer: bool = False,
+    oauth: dict[str, Any] | None = None,
+    config: dict[str, Any] | None = None,
+    icon_url: str | None = None,
+) -> dict[str, Any]:
+    """Mutates the catalogue. Add a connector row, always DISABLED: probe it with ``mcp_server_tools``, then ``enable_mcp_server``.
+
+    Only the vendor's own official MCP server (from its developer docs), never a community one; no official
+    server means a handmade module (a gate PR first). The slug is the cosmos service name hyphenated
+    (``google_maps`` → ``google-maps``). Delos keys, secrets, prices and the worker fallback are set in the gate
+    admin, not here.
+
+    Args:
+        slug: kebab-case, the cosmos service name hyphenated.
+        name: the vendor's product name.
+        type: builtin (vendor-hosted MCP), handmade (gate module) or json (REST API from an OpenAPI spec).
+        description: one or two sentences written for members; cosmos also hands it to the model.
+        instructions: for the agent: what the tools are for, ids to reuse, pitfalls, call order.
+        category: a shelf slug from ``list_mcp_categories``.
+        url: builtin: the official MCP endpoint.
+        module: handmade: the module name in the gate's MODULE_NAMES.
+        auth_type: builtin: oauth, api_key or none (what a caller forwards).
+        api_key_header: api_key rows: the header the key goes in (``X-API-Key``).
+        api_key_bearer: api_key rows: send ``Bearer <key>`` in that header.
+        oauth: oauth hints the vendor's discovery cannot give (``dcr``, ``scope``, ``authorize_url``…).
+        config: json rows: ``base_url``, ``headers``, ``openapi``; other config keys to set.
+        icon_url: an https URL of the vendor's logo, which the gate downloads and inlines.
+
+    Returns:
+        ``{created, id, enabled: false}`` or ``{"error": ...}``. Needs an **mcp_edit** key.
+    """
+    built = _new_row_config(type, url, module, auth_type, config, oauth)
+    if isinstance(built, str):
+        return {"error": built}
+    if api_key_header:
+        built.update(api_key_header=api_key_header, api_key_bearer=api_key_bearer)
+    if oauth:
+        built["oauth"] = oauth
+    try:
+        async with _client() as client:
+            category_id = await _category_id(client, category)
+            if category_id is None:
+                return {"error": f"no category {category!r}: pick a slug from list_mcp_categories"}
+            if type == "json" and not (checked := await client.validate_mcp_server_config(built)).get("ok"):
+                return {"error": f"the spec does not build: {checked.get('error')}"}
+            row = await client.create_mcp_server(
+                {
+                    "slug": slug,
+                    "name": name,
+                    "type": type,
+                    "enabled": False,
+                    "seamless": False,
+                    "config": built,
+                    "description": description,
+                    "instructions": instructions,
+                    "category_id": category_id,
+                }
+            )
+            if icon_url:
+                await _inline_icon(client, str(row["id"]), icon_url)
+    except LLMError as exc:
+        return {"error": _edit_error(exc)}
+    return {"created": row.get("slug"), "id": row.get("id"), "enabled": False, "next": "mcp_server_tools, then enable_mcp_server"}
+
+
+@mcp.tool()
+async def update_mcp_server(
+    slug: str,
+    name: str | None = None,
+    description: str | None = None,
+    instructions: str | None = None,
+    append_instructions: str | None = None,
+    category: str | None = None,
+    config: dict[str, Any] | None = None,
+    translations: dict[str, Any] | None = None,
+    icon_url: str | None = None,
+) -> dict[str, Any]:
+    """Mutates the catalogue. Change a row's texts, shelf, icon or config keys; live everywhere within minutes.
+
+    ``config`` is merged key by key into the row's (a key set to null is dropped); every other field given
+    replaces the stored one, so read the row with ``get_mcp_server`` first. ``append_instructions`` adds a
+    paragraph after the current instructions instead of rewriting them. Delos keys, secrets, prices and the
+    worker fallback (``delos_key_for``) are refused: they belong to the gate admin.
+
+    Args:
+        slug: the row's slug.
+        name: the product name.
+        description: the members' description.
+        instructions: the full new instructions (replaces them).
+        append_instructions: a paragraph added after the current instructions.
+        category: a shelf slug from ``list_mcp_categories``.
+        config: config keys to set or (null) drop.
+        translations: the description's translations, by locale.
+        icon_url: an https URL of the vendor's logo, which the gate downloads and inlines.
+
+    Returns:
+        ``{updated, changed}`` or ``{"error": ...}``. Needs an **mcp_edit** key.
+    """
+    if problem := _update_problem(instructions, append_instructions, config):
+        return {"error": problem}
+    changes: dict[str, Any] = {
+        key: value
+        for key, value in (("name", name), ("description", description), ("instructions", instructions), ("translations", translations))
+        if value is not None
+    }
+    if config:
+        changes["config"] = config
+    try:
+        async with _client() as client:
+            row = await _row_by_slug(client, slug)
+            if row is None:
+                return {"error": f"no MCP server with slug {slug!r}"}
+            if append_instructions:
+                changes["instructions"] = f"{(row.get('instructions') or '').rstrip()}\n\n{append_instructions.strip()}".strip()
+            if category:
+                changes["category_id"] = await _category_id(client, category)
+            if changes.get("category_id", "") is None:
+                return {"error": f"no category {category!r}: pick a slug from list_mcp_categories"}
+            if not changes and not icon_url:
+                return {"error": "nothing to change"}
+            if changes:
+                await client.update_mcp_server(str(row["id"]), changes)
+            if icon_url:
+                await _inline_icon(client, str(row["id"]), icon_url)
+    except LLMError as exc:
+        return {"error": _edit_error(exc)}
+    return {"updated": slug, "changed": sorted([*changes, *(["icon"] if icon_url else [])]), "live": _LIVE_DELAY}
+
+
+async def _set_enabled(slug: str, *, enabled: bool) -> dict[str, Any]:
+    try:
+        async with _client() as client:
+            row = await _row_by_slug(client, slug)
+            if row is None:
+                return {"error": f"no MCP server with slug {slug!r}"}
+            if enabled and (missing := [field for field in _ENABLE_NEEDS if not row.get(field)]):
+                return {"error": f"cannot enable {slug}: missing {missing} (the gate's CI refuses such a row)"}
+            await client.update_mcp_server(str(row["id"]), {"enabled": enabled})
+    except LLMError as exc:
+        return {"error": _edit_error(exc)}
+    return {"slug": slug, "enabled": enabled, "live": _LIVE_DELAY}
+
+
+@mcp.tool()
+async def enable_mcp_server(slug: str) -> dict[str, Any]:
+    """Mutates the catalogue. Switch a row on for every org: refused while it lacks an icon, shelf, description or instructions.
+
+    Probe it with ``mcp_server_tools`` first. A handmade row's module must already be released on the gate.
+
+    Args:
+        slug: the row's slug.
+
+    Returns:
+        ``{slug, enabled}`` or ``{"error": ...}``. Needs an **mcp_edit** key.
+    """
+    return await _set_enabled(slug, enabled=True)
+
+
+@mcp.tool()
+async def disable_mcp_server(slug: str) -> dict[str, Any]:
+    """Mutates the catalogue. Switch a row off for every org; its usage history and the cosmos rows pointing at it are kept.
+
+    Prefer it to deleting a row, which this server cannot do.
+
+    Args:
+        slug: the row's slug.
+
+    Returns:
+        ``{slug, enabled}`` or ``{"error": ...}``. Needs an **mcp_edit** key.
+    """
+    return await _set_enabled(slug, enabled=False)
 
 
 @mcp.tool()

@@ -1,6 +1,6 @@
 ---
 name: gate-llmax
-description: How to call LLMs through the Gate gateway with the gate-llmax Python client — the fast path for chat, streaming, structured output, tools, model fallback, and cosmos-style plans. Use when writing or editing code that sends prompts to an LLM, embeds text, or generates images/audio/video in a project that depends on gate-llmax (imports `gate_llmax` / `LLMClient`). Pairs with the `gate-llmax` MCP server for listing models/plans and building plan-covering fallback lists.
+description: How to call LLMs through the Gate gateway with the gate-llmax Python client — the fast path for chat, streaming, structured output, tools, model fallback, and cosmos-style plans. Use when writing or editing code that sends prompts to an LLM, embeds text, or generates images/audio/video in a project that depends on gate-llmax (imports `gate_llmax` / `LLMClient`). Pairs with the `gate-llmax` MCP server for listing models/plans and building plan-covering fallback lists. Also the gate's MCP connector catalogue: reading, adding or editing a connector row, its usage and failures, and giving a worker template a connector on Delos's own key.
 ---
 
 # Using the Gate client (gate-llmax)
@@ -142,6 +142,33 @@ here), qualify it before calling it done:
 
 Re-run `verify_profile` after applying proposals until it proposes nothing, and say plainly which
 features stayed restricted and why.
+
+## The MCP connector catalogue (MCP tools, a key with `mcp_edit`)
+
+Every cosmos connector is a gate row: its tile, sub-agent and tools all come from the row, with no cosmos migration.
+
+- **Read**: `list_mcp_servers`, `get_mcp_server(slug)` (config, secrets masked), `mcp_server_tools(slug)`,
+  `mcp_server_revisions(slug)`, `list_mcp_categories`. Usage: `mcp_usage`, `mcp_usage_errors`, `mcp_usage_samples`;
+  a dead token (`auth`) or a throttle (`rate_limited`) is not in the error counts, ask `mcp_usage_samples` for those statuses.
+- **Add**: the vendor's **official** hosted MCP server only, from its developer docs (none → a handmade module, a gate PR
+  first). `create_mcp_server` makes the row disabled, with icon, shelf, members' description and agent instructions;
+  probe it with `mcp_server_tools` (a 401 is expected on a row members connect, or on Delos's key), then `enable_mcp_server`.
+- **Edit**: `update_mcp_server` merges `config` and replaces every other field it is given; `append_instructions` adds a
+  pitfall without retyping the rest. A change is live for every org within about five minutes.
+- **Not from here** (the gate admin, on Evan's go): deleting a row, Delos's own key, prices, the Pipedream/Delos switch, drafts.
+
+### Giving a worker template a connector (worker auto-connect)
+
+1. The row carries Delos's own key (the gate admin's « Delos key » switch, then `has_delos_key: true`), or is public
+   (`auth_type: none`, nothing for anyone to connect).
+2. In cosmos, `/admin/worker-templates` → Intégrations → « Connectés automatiquement » (`worker_templates.auto_connect_mcps`).
+   That list decides; the row's `config.delos_key_for` is only the fallback of a template that never saved one, so it is not needed.
+3. Checking a row there applies to **every worker already hired** from that template (Sophie had ~1 750 in Nov 2026): ask Evan first.
+4. Every call then spends Delos's account: agree on how it is billed with Evan before checking it.
+5. One account serves every org. A handmade module keeps them apart (`is_members_own_key`); a builtin row cannot, so its tools
+   listing the account's searches, lists or jobs show each org the others'. Keep such a vendor off a shared key, or wrap it in a
+   handmade module that drops those tools.
+6. Check it runs: `mcp_usage(servers=[slug], group="server+tool")` and `mcp_usage_errors(servers=[slug])`.
 
 ## Gotchas
 

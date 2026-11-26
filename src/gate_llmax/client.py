@@ -1416,6 +1416,54 @@ class LLMClient:
         _raise_for_status(response)
         return list(response.json())
 
+    async def list_mcp_server_rows(self) -> list[dict[str, Any]]:
+        """GET /admin/mcp/servers — every MCP catalogue row as stored, config included. Requires an ``mcp_edit`` key."""
+        response = await self._http.get("/admin/mcp/servers")
+        _raise_for_status(response)
+        return list(response.json())
+
+    async def list_mcp_categories(self) -> list[dict[str, Any]]:
+        """GET /admin/mcp/categories — the shelves a catalogue row sits on. Requires an ``mcp_edit`` key."""
+        response = await self._http.get("/admin/mcp/categories")
+        _raise_for_status(response)
+        return list(response.json())
+
+    async def validate_mcp_server_config(self, config: dict[str, Any]) -> dict[str, Any]:
+        """POST /admin/mcp/servers/validate — whether a json row's spec builds, and the tools it yields. Requires an ``mcp_edit`` key."""
+        response = await self._http.post("/admin/mcp/servers/validate", json=config)
+        _raise_for_status(response)
+        return dict(response.json())
+
+    async def create_mcp_server(self, row: dict[str, Any]) -> dict[str, Any]:
+        """POST /admin/mcp/servers — add a catalogue row. Requires an ``mcp_edit`` key."""
+        response = await self._http.post("/admin/mcp/servers", json=row)
+        _raise_for_status(response)
+        return dict(response.json())
+
+    async def update_mcp_server(self, server_id: str, changes: dict[str, Any]) -> dict[str, Any]:
+        """PATCH /admin/mcp/servers/{id} — top-level fields replaced, ``config`` merged key by key. Requires an ``mcp_edit`` key."""
+        response = await self._http.patch(f"/admin/mcp/servers/{server_id}", json=changes)
+        _raise_for_status(response)
+        return dict(response.json())
+
+    async def fetch_mcp_server_icon(self, server_id: str) -> dict[str, Any]:
+        """POST /admin/mcp/servers/{id}/fetch-icon — the gate inlines the row's https icon. Requires an ``mcp_edit`` key."""
+        response = await self._http.post(f"/admin/mcp/servers/{server_id}/fetch-icon")
+        _raise_for_status(response)
+        return dict(response.json())
+
+    async def mcp_server_tools(self, server_id: str) -> list[dict[str, Any]]:
+        """GET /admin/mcp/servers/{id}/tools — what the gate lists for the row, built the way it mounts it. Requires an ``mcp_edit`` key."""
+        response = await self._http.get(f"/admin/mcp/servers/{server_id}/tools")
+        _raise_for_status(response)
+        return list(response.json())
+
+    async def mcp_server_revisions(self, server_id: str) -> list[dict[str, Any]]:
+        """GET /admin/mcp/servers/{id}/revisions — who changed which fields of the row, newest first. Requires an ``mcp_edit`` key."""
+        response = await self._http.get(f"/admin/mcp/servers/{server_id}/revisions")
+        _raise_for_status(response)
+        return list(response.json())
+
     async def usage_errors(
         self,
         *,
