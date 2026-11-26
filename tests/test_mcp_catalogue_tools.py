@@ -32,7 +32,11 @@ _CATEGORY = {"id": "cat-1", "slug": "sales", "name": "Sales", "sort_order": 1}
 
 
 def gateway(
-    monkeypatch: pytest.MonkeyPatch, rows: list[dict[str, Any]] | None = None, *, icon_status: int = 200
+    monkeypatch: pytest.MonkeyPatch,
+    rows: list[dict[str, Any]] | None = None,
+    *,
+    icon_status: int | None = 200,
+    spec_builds: bool = False,
 ) -> list[tuple[str, str, Any]]:
     """Point the tools at a fake gate holding ``rows``; returns every (method, path, body) it was sent."""
     sent: list[tuple[str, str, Any]] = []
@@ -43,7 +47,11 @@ def gateway(
         sent.append((request.method, request.url.path, body))
         path = request.url.path
         if path.endswith("/fetch-icon"):
+            if icon_status is None:
+                raise httpx.ReadTimeout("the vendor's CDN did not answer")
             return httpx.Response(icon_status, json={"detail": "not a PNG or SVG"})
+        if path == "/admin/mcp/servers/validate":
+            return httpx.Response(200, json={"ok": spec_builds, "error": None if spec_builds else "no paths"})
         if path in {"/admin/mcp/servers", "/v1/mcp/servers"} and request.method == "GET":
             return httpx.Response(200, json=stored)
         if path == "/admin/mcp/categories":
@@ -74,13 +82,13 @@ async def test_the_listing_keeps_its_documented_fields_without_icons(monkeypatch
 async def test_a_json_row_shows_its_spec_summed_up_and_a_listed_secret_masked(monkeypatch: pytest.MonkeyPatch) -> None:
     """A full OpenAPI spec would cost the agent tens of thousands of tokens for one read."""
     spec = {"info": {"title": "Acme API"}, "paths": {"/a": {}, "/b": {}}}
-    gateway(monkeypatch, [{**_ROW, "type": "json", "config": {"openapi": spec, "private_keys": ["k1", "k2"]}}])
-    config = (await mcp_server.get_mcp_server("pipecorn"))["config"]
-    assert config == {"openapi": {"title": "Acme API", "paths": 2}, "private_keys": "***"}
+    config = {"openapi": spec, "private_keys": ["k1", "k2"], "is_members_own_key": True}
+    gateway(monkeypatch, [{**_ROW, "type": "json", "config": config}])
+    shown = (await mcp_server.get_mcp_server("pipecorn"))["config"]
+    assert shown == {"openapi": {"title": "Acme API", "paths": 2}, "private_keys": "***", "is_members_own_key": True}
 
 
 async def test_a_row_is_read_with_its_secrets_masked_and_its_icon_as_a_flag(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A header name or a token URL stays readable; a secret value never leaves the gate."""
     gateway(monkeypatch)
     row = await mcp_server.get_mcp_server("pipecorn")
     assert row["config"]["oauth"] == {"client_secret": "***", "token_url": "https://t"}
@@ -89,7 +97,6 @@ async def test_a_row_is_read_with_its_secrets_masked_and_its_icon_as_a_flag(monk
 
 
 async def test_a_new_row_is_created_disabled_on_its_category(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Enabling is a separate step, after the probe."""
     sent = gateway(monkeypatch)
     out = await mcp_server.create_mcp_server(
         "acme", "Acme", "builtin", "Acme CRM.", "Use search first.", "sales", url="https://mcp.acme.com/mcp", auth_type="oauth"
@@ -106,13 +113,13 @@ async def test_a_new_row_is_created_disabled_on_its_category(monkeypatch: pytest
         {"url": "https://mcp.acme.com/mcp", "auth_type": "api_key", "config": {"delos_key_credential_id": "cred"}},
         {"url": "https://mcp.acme.com/mcp", "auth_type": "api_key", "config": {"delos_key_for": ["sophie"]}},
         {"url": "https://mcp.acme.com/mcp", "auth_type": "oauth", "oauth": {"client_secret": "s"}},
+        {"url": "https://mcp.acme.com/mcp", "auth_type": "oauth", "config": {"oauth": {"client_secret": "s"}}},
         {"auth_type": "oauth"},
     ],
 )
 async def test_a_creation_the_admin_keeps_or_that_lacks_its_endpoint_sends_nothing(
     monkeypatch: pytest.MonkeyPatch, arguments: dict[str, Any]
 ) -> None:
-    """A Delos key, a secret or the worker fallback is the gate admin's; a builtin row needs its URL."""
     sent = gateway(monkeypatch)
     out = await mcp_server.create_mcp_server("acme", "Acme", "builtin", "Acme CRM.", "Use search first.", "sales", **arguments)
     assert "error" in out
@@ -120,7 +127,9 @@ async def test_a_creation_the_admin_keeps_or_that_lacks_its_endpoint_sends_nothi
 
 
 async def test_a_json_row_whose_spec_does_not_build_is_not_created(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A vendor's `/oauth/token` route or `password` field is its spec, not one of our secrets: the gate judges the spec."""
     sent = gateway(monkeypatch)
+    spec = {"paths": {"/oauth/token": {}}, "components": {"schemas": {"Login": {"properties": {"password": {}}}}}}
     out = await mcp_server.create_mcp_server(
         "acme",
         "Acme",
@@ -128,7 +137,7 @@ async def test_a_json_row_whose_spec_does_not_build_is_not_created(monkeypatch: 
         "Acme CRM.",
         "Use search first.",
         "sales",
-        config={"base_url": "https://api.acme.com", "openapi": {"paths": {}}},
+        config={"base_url": "https://api.acme.com", "openapi": spec},
     )
     assert "error" in out
     assert [path for _, path, _ in _writes(sent)] == ["/admin/mcp/servers/validate"]
@@ -147,7 +156,6 @@ async def test_a_key_without_mcp_edit_is_told_which_flag_it_lacks(monkeypatch: p
 
 
 async def test_appended_instructions_keep_the_current_ones(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A pitfall is added without retyping a long instruction block."""
     sent = gateway(monkeypatch)
     await mcp_server.update_mcp_server("pipecorn", append_instructions="A 422 live-mode refusal needs live: true.")
     [(method, path, body)] = _writes(sent)
@@ -163,6 +171,8 @@ async def test_appended_instructions_keep_the_current_ones(monkeypatch: pytest.M
         {"config": {"suggested_for": ["sophie"]}},
         {"config": {"oauth": {"client_secret": "x"}}},
         {"config": {"headers": {"Api-Version": "1"}}},
+        {"config": {"oauth": {"delos_auto_connect": "https://issuer"}}},
+        {"config": {"oauth": {"sources": [{"client_secret": "x"}]}}},
         {"instructions": "new", "append_instructions": "more"},
         {"category": "unknown"},
         {"description": "  "},
@@ -186,9 +196,19 @@ async def test_a_partial_oauth_change_keeps_the_other_hints(monkeypatch: pytest.
     assert body["config"]["oauth"] == {"client_secret": "s3cr3t", "token_url": "https://t", "scope": "read"}
 
 
-async def test_a_logo_the_gate_refuses_still_reports_the_created_row(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_new_spec_replaces_the_stored_one_once_it_builds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Merged, a route the new spec dropped would stay a live tool for every org."""
+    row = {**_ROW, "type": "json", "config": {"base_url": "https://api.acme.com", "openapi": {"paths": {"/a": {}, "/b": {}}}}}
+    sent = gateway(monkeypatch, [row], spec_builds=True)
+    await mcp_server.update_mcp_server("pipecorn", config={"openapi": {"paths": {"/a": {}}}})
+    assert [path for _, path, _ in _writes(sent)] == ["/admin/mcp/servers/validate", "/admin/mcp/servers/row-1"]
+    assert _writes(sent)[-1][2]["config"]["openapi"] == {"paths": {"/a": {}}}
+
+
+@pytest.mark.parametrize("icon_status", [415, None])
+async def test_a_logo_the_gate_refuses_still_reports_the_created_row(monkeypatch: pytest.MonkeyPatch, icon_status: int | None) -> None:
     """Reported as a failure, the creation was retried and refused on its own slug."""
-    sent = gateway(monkeypatch, icon_status=415)
+    sent = gateway(monkeypatch, icon_status=icon_status)
     out = await mcp_server.create_mcp_server(
         "acme",
         "Acme",
@@ -220,7 +240,6 @@ async def test_a_row_without_an_icon_is_not_enabled(monkeypatch: pytest.MonkeyPa
 
 
 async def test_disabling_switches_the_row_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Disabling keeps the row's history; this server cannot delete one."""
     sent = gateway(monkeypatch)
     out = await mcp_server.disable_mcp_server("pipecorn")
     assert _writes(sent) == [("PATCH", "/admin/mcp/servers/row-1", {"enabled": False})]

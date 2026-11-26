@@ -157,7 +157,8 @@ Every cosmos connector is a gate row: its tile, sub-agent and tools all come fro
   it is given; `append_instructions` adds a pitfall without retyping the rest. A change is live for every org within about
   five minutes, and an enabled row never loses its icon, shelf, description or instructions.
 - **Not from here** (the gate admin, on the catalogue owner's go): deleting a row, Delos's own key, secrets, prices, the
-  Pipedream/Delos switch, drafts, and what reaches every worker (`delos_key_for`, `auto_connect_all`, `suggested_for`).
+  Pipedream/Delos switch, drafts, Delos Auto Connect (`oauth.delos_auto_connect`, set after the gate probes the vendor),
+  and what reaches every worker (`delos_key_for`, `auto_connect_all`, `suggested_for`).
 
 ### Giving a worker template a connector (worker auto-connect)
 

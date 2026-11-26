@@ -1433,13 +1433,17 @@ async def list_mcp_servers() -> list[dict[str, Any]]:
 
 _MCP_EDIT_HINT = "This tool needs a gate API key with the `mcp_edit` flag, which the gate admin sets on the key."
 _HTTP_FORBIDDEN = 403
-_FAILURES = (LLMError, httpx.HTTPStatusError)
-# Delos's own key and what reaches every worker stay in the gate admin: a chat must never place a secret or reach every hired worker.
-_GUARDED_CONFIG_KEYS = frozenset({"delos_key_credential_id", "delos_key_for", "auto_connect_all", "suggested_for"})
+_FAILURES = (LLMError, httpx.HTTPError)
+# Delos's own key, what reaches every worker and how every org's members sign in stay in the gate admin, on its own probes.
+_GUARDED_CONFIG_KEYS = frozenset(
+    {"delos_key_credential_id", "delos_key_for", "auto_connect_all", "suggested_for", "delos_auto_connect", "ema_audience"}
+)
 # The gate drops `config.headers` on save: a fixed header belongs in the spec or in the credential.
 _DROPPED_CONFIG_KEYS = frozenset({"headers"})
-_SECRET_NAMES = frozenset({"api_key", "apikey", "x-api-key", "authorization"})
-_SECRET_ENDINGS = ("secret", "token", "password", "_key")
+# A json row's spec is the vendor's: replaced whole, and its route and field names are never read as our secrets.
+_OPAQUE_CONFIG_KEYS = frozenset({"openapi"})
+_SECRET_NAMES = frozenset({"api_key", "apikey", "x-api-key", "authorization", "secret_key", "private_key", "access_key"})
+_SECRET_ENDINGS = ("secret", "token", "password")
 _ROW_TYPES = frozenset({"builtin", "handmade", "json"})
 _AUTH_TYPES = frozenset({"oauth", "api_key", "none"})
 _CARD_FIELDS = ("icon", "category_id", "description", "instructions")
@@ -1461,7 +1465,7 @@ def _is_secret(key: str) -> bool:
 
 
 def _masked(value: Any, key: str = "") -> Any:
-    if value and key and (_is_secret(key) or key.lower() in _DROPPED_CONFIG_KEYS):
+    if value and not isinstance(value, bool) and key and (_is_secret(key) or key.lower() in _DROPPED_CONFIG_KEYS):
         return "***"
     if isinstance(value, dict):
         return {k: _masked(v, k) for k, v in value.items()}
@@ -1485,14 +1489,23 @@ def _refused_config_keys(config: dict[str, Any] | None, at: str = "") -> list[st
         lowered = key.lower()
         if lowered in _GUARDED_CONFIG_KEYS or lowered in _DROPPED_CONFIG_KEYS or _is_secret(key):
             refused.append(f"{at}{key}")
-        elif isinstance(value, dict):
-            refused += _refused_config_keys(value, f"{at}{key}.")
+        elif lowered not in _OPAQUE_CONFIG_KEYS:
+            refused += _refused_nested(value, f"{at}{key}")
     return sorted(refused)
+
+
+def _refused_nested(value: Any, path: str) -> list[str]:
+    if isinstance(value, dict):
+        return _refused_config_keys(value, f"{path}.")
+    if isinstance(value, list):
+        return [key for index, item in enumerate(value) for key in _refused_nested(item, f"{path}[{index}]")]
+    return []
 
 
 def _refusal(keys: list[str]) -> str:
     return (
-        f"refused config keys {keys}: Delos keys, secrets, headers and what reaches every worker are set in the gate admin, not from here"
+        f"refused config keys {keys}: Delos keys, secrets, headers, what reaches every worker and Delos Auto Connect "
+        "are set in the gate admin, not from here"
     )
 
 
@@ -1530,7 +1543,6 @@ async def _category_id(client: LLMClient, category: str) -> str | None:
 
 
 async def _inline_icon(client: LLMClient, server_id: str, icon_url: str, previous: str | None) -> str | None:
-    """None once the gate inlined the logo; otherwise why, with the previous icon put back."""
     try:
         await client.update_mcp_server(server_id, {"icon": icon_url})
         await client.fetch_mcp_server_icon(server_id)
@@ -1552,11 +1564,8 @@ def _new_row_config(
     oauth: dict[str, Any] | None,
     config: dict[str, Any] | None,
 ) -> dict[str, Any] | str:
-    """The new row's config, or why it cannot be built."""
     if row_type not in _ROW_TYPES:
         return f"type must be one of {sorted(_ROW_TYPES)}"
-    if refused := _refused_config_keys({**(config or {}), "oauth": oauth or {}}):
-        return _refusal(refused)
     built = dict(config or {})
     if row_type == "builtin":
         if not url or auth_type not in _AUTH_TYPES:
@@ -1572,7 +1581,7 @@ def _new_row_config(
         built.update(api_key_header=api_key_header, api_key_bearer=api_key_bearer)
     if oauth:
         built["oauth"] = oauth
-    return built
+    return _refusal(refused) if (refused := _refused_config_keys(built)) else built
 
 
 async def _row_changes(
@@ -1585,22 +1594,31 @@ async def _row_changes(
     config: dict[str, Any] | None,
     translations: dict[str, Any] | None,
 ) -> dict[str, Any] | str:
-    """The PATCH body for *row*, nested maps merged into the stored ones; or why it cannot apply."""
     changes: dict[str, Any] = {key: value for key, value in texts.items() if value is not None}
     if append_instructions:
         changes["instructions"] = f"{(row.get('instructions') or '').rstrip()}\n\n{append_instructions.strip()}".strip()
     if translations:
         changes["translations"] = _merged(row.get("translations") or {}, translations)
+    stored = row.get("config") or {}
     if config:
-        stored = row.get("config") or {}
-        changes["config"] = {key: _merged(stored.get(key), value) for key, value in config.items()}
+        changes["config"] = {k: v if k in _OPAQUE_CONFIG_KEYS else _merged(stored.get(k), v) for k, v in config.items()}
+    effective = {key: value for key, value in {**stored, **changes.get("config", {})}.items() if value is not None}
+    if problem := await _spec_problem(client, row, config, effective):
+        return problem
     if category:
         if (category_id := await _category_id(client, category)) is None:
             return f"no category {category!r}: pick a slug from list_mcp_categories"
         changes["category_id"] = category_id
-    if row.get("enabled") and (blank := _missing_card({**row, **changes})):
+    if row.get("enabled") and (blank := _missing_card({**row, **changes, "config": effective})):
         return f"refused: the enabled row would lose {blank}, which every org's tile and agent read"
     return changes
+
+
+async def _spec_problem(client: LLMClient, row: dict[str, Any], config: dict[str, Any] | None, effective: dict[str, Any]) -> str | None:
+    if row.get("type") != "json" or not (config or {}).keys() & {"openapi", "base_url"}:
+        return None
+    checked = await client.validate_mcp_server_config(effective)
+    return None if checked.get("ok") else f"the spec does not build: {checked.get('error')}"
 
 
 @mcp.tool()
@@ -1835,7 +1853,7 @@ async def update_mcp_server(
             icon_error = await _inline_icon(client, str(row["id"]), icon_url, row.get("icon")) if icon_url else None
     except _FAILURES as exc:
         return {"error": _edit_error(exc)}
-    updated = {"updated": slug, "changed": sorted(changes), "live": _LIVE_DELAY}
+    updated = {"updated": slug, "changed": sorted([*changes, *(["icon"] if icon_url and not icon_error else [])]), "live": _LIVE_DELAY}
     return {**updated, "icon_error": icon_error} if icon_error else updated
 
 
