@@ -49,6 +49,7 @@ from .metering import (
     bears_usage,
     chunk_usage,
     estimated_usage,
+    image_estimate,
     left_settling,
     settle,
     timed_out_unsent,
@@ -391,6 +392,30 @@ class MediaBuilder[ResponseT: LLMCallRecord](BaseModel):
             await self._fire_usage(response.usage)
         for cb in self.callbacks:
             await cb(response)
+
+    async def _sent[R](self, request: Any, send: Coroutine[Any, Any, R]) -> R:
+        """Await ``send``, the media ``request`` going out: one Gate received but never answered fires an estimate, then re-raises.
+
+        Gate received it unless it could not connect or timed out before it was sent; a timeout,
+        a cancellation or a connection lost after the send then fires ``_media_estimate``. A refusal
+        (404, 5xx) fires nothing.
+        """
+        try:
+            with _naming_failures(request.call_id):
+                return await send
+        except (LLMTimeoutError, asyncio.CancelledError, *LOST_AFTER_SEND) as exc:
+            if not timed_out_unsent(exc):
+                await settle(self._fire_estimate(request), quiet=True)
+            raise
+
+    async def _fire_estimate(self, request: Any) -> None:
+        await self._fire_usage(await self._media_estimate(request))
+
+    async def _media_estimate(self, request: Any) -> RawUsage:
+        """What a media ``request`` Gate never answered is estimated at: cost 0, flagged, the client knowing no price for it."""
+        return estimated_usage(
+            None, model=request.model, input_tokens=0, output_tokens=0, operation=request.operation, call_id=request.call_id
+        )
 
     async def call(self, model: str) -> ResponseT:
         """Send the request for ``model``. Each builder overrides this."""
@@ -1576,8 +1601,7 @@ class ImageRequestBuilder(MediaBuilder[ImageResponse]):
         await self._gate_budget()
         call_id = self._next_call_id()
         request = self.request.model_copy(update={"model": model, "call_id": call_id})
-        with _naming_failures(call_id):
-            response = await self.client._send_images(request)  # noqa: SLF001
+        response = await self._sent(request, self.client._send_images(request))  # noqa: SLF001
         response.usage.call_id = call_id
         await self._fire(response)
         return response
@@ -1587,23 +1611,58 @@ class ImageRequestBuilder(MediaBuilder[ImageResponse]):
         return asyncio.run(self.call(model))
 
     async def call_stream(self, model: str) -> AsyncIterator[ImageData]:
-        """Stream partial image frames; after the final frame, fire usage + result callbacks."""
+        """Stream partial image frames; fire the usage on every exit, and the result callbacks at the end.
+
+        The usage is Gate's, from the frame it sends after the last image. A stream that ends
+        without it, or that the caller leaves (``aclose()``), cancels, or that times out or fails
+        first, fires an estimate (``estimated=True``) as Gate bills it: once an image arrived, the
+        images asked for at the model's image price (cost 0 when the client can't get it), before
+        any, nothing. A stream Gate never received, or that ends or fails before any image (Gate
+        refused or failed it), fires nothing.
+        """
         await self._gate_budget()
         call_id = self._next_call_id()
         request = self.request.model_copy(update={"model": model, "call_id": call_id})
         frames: list[ImageData] = []
-        terminal_usage: RawUsage | None = None
-        with _naming_failures(call_id):
-            async for chunk in self.client._stream_images(request):  # noqa: SLF001
-                if isinstance(chunk, ImageData):
-                    frames.append(chunk)
-                    yield chunk
-                else:
-                    terminal_usage = chunk
-        usage = terminal_usage or RawUsage(model=request.model)
-        usage.call_id = call_id
-        synth = ImageResponse(model=request.model, data=frames, usage=usage)
-        await self._fire(synth)
+        reported: RawUsage | None = None
+        error: BaseException | None = None
+        try:
+            with _naming_failures(call_id):
+                async with Closing(self.client._stream_images(request)) as chunks:  # noqa: SLF001
+                    async for chunk in chunks:
+                        if isinstance(chunk, ImageData):
+                            frames.append(chunk)
+                            yield chunk
+                        else:
+                            reported = chunk
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            owes = _image_stream_owes_usage(error, reported=reported is not None, delivered=bool(frames))
+            if owes or error is None:
+                stream_end = self._bill_image_stream(request, frames, reported, owes=owes, finished=error is None)
+                await settle(stream_end, quiet=error is not None)
+
+    async def _bill_image_stream(
+        self, request: ImageRequest, frames: list[ImageData], reported: RawUsage | None, *, owes: bool, finished: bool
+    ) -> None:
+        """Fire an image stream's usage when it ``owes`` one, Gate's else an estimate; a ``finished`` stream also hands its result on."""
+        if reported is not None:
+            usage = reported
+        elif owes:
+            usage = image_estimate(await self.client._list_price(request.model, request.plan), request, priced=bool(frames))  # noqa: SLF001
+        else:
+            usage = RawUsage(model=request.model)
+        usage.call_id = request.call_id
+        if finished:
+            await self._fire(ImageResponse(model=request.model, data=frames, usage=usage), disable_usage=not owes)
+        elif owes:
+            await self._fire_usage(usage)
+
+    async def _media_estimate(self, request: ImageRequest) -> RawUsage:
+        """An image call Gate received but never answered: it runs to its end on Gate, so the images asked for, at its image price."""
+        return image_estimate(await self.client._list_price(request.model, request.plan), request, priced=True)  # noqa: SLF001
 
     def stream(self) -> ImageStreamBuilder:
         """Streaming view: ``.stream().call(model)`` / ``.stream().call_prefer(models)`` yield partial ``ImageData`` frames.
@@ -1629,8 +1688,9 @@ class ImageStreamBuilder:
 
     async def call(self, model: str) -> AsyncIterator[ImageData]:
         """Stream partial frames for a single ``model``."""
-        async for frame in self._source.call_stream(model):
-            yield frame
+        async with Closing(self._source.call_stream(model)) as frames:
+            async for frame in frames:
+                yield frame
 
     async def call_prefer(self, models: list[str]) -> AsyncIterator[ImageData]:
         """Stream partial frames, committing to the first model that emits one (see class docstring)."""
@@ -1638,9 +1698,10 @@ class ImageStreamBuilder:
         for model in models:
             started = False
             try:
-                async for frame in self._source.call_stream(model):
-                    started = True
-                    yield frame
+                async with Closing(self._source.call_stream(model)) as frames:
+                    async for frame in frames:
+                        started = True
+                        yield frame
             except (LLMModelNotFoundError, LLMServerError, LLMTimeoutError, LLMConnectionError, TimeoutError) as exc:
                 if started:
                     raise
@@ -1664,8 +1725,7 @@ class TTSRequestBuilder(MediaBuilder[BaseAudioResponse]):
         await self._gate_budget()
         call_id = self._next_call_id()
         request = self.request.model_copy(update={"model": model, "call_id": call_id})
-        with _naming_failures(call_id):
-            response = await self.client._send_tts(request)  # noqa: SLF001
+        response = await self._sent(request, self.client._send_tts(request))  # noqa: SLF001
         response.usage.call_id = call_id
         await self._fire(response)
         return response
@@ -1698,26 +1758,47 @@ class TTSRequestBuilder(MediaBuilder[BaseAudioResponse]):
             error = exc
             raise
         finally:
-            if _speech_owes_usage(error, delivered=delivered):
-                await settle(self._bill_speech(request, call_id, finished=error is None), quiet=error is not None)
+            if _media_stream_owes_usage(error, delivered=delivered):
+                await settle(self._bill_speech(request, finished=error is None), quiet=error is not None)
 
-    async def _bill_speech(self, request: TTSRequest, call_id: UUID, *, finished: bool) -> None:
+    async def _bill_speech(self, request: TTSRequest, *, finished: bool) -> None:
         """Fire a speech stream's estimate; a ``finished`` stream also hands its result to the callbacks."""
-        price = await self.client._list_price(request.model, request.plan)  # noqa: SLF001
-        usage = estimated_usage(
-            price, model=request.model, input_tokens=len(request.text), output_tokens=0, operation=request.operation, call_id=call_id
-        )
+        usage = await self._media_estimate(request)
         if not finished:
             await self._fire_usage(usage)
             return
         await self._fire(TTSResponse(model=request.model, audio="", response_format=request.response_format, usage=usage))
 
+    async def _media_estimate(self, request: TTSRequest) -> RawUsage:
+        """Speech Gate never reported: the text's characters at the model's input price, as Gate bills them."""
+        price = await self.client._list_price(request.model, request.plan)  # noqa: SLF001
+        return estimated_usage(
+            price,
+            model=request.model,
+            input_tokens=len(request.text),
+            output_tokens=0,
+            operation=request.operation,
+            call_id=request.call_id,
+        )
 
-def _speech_owes_usage(error: BaseException | None, *, delivered: bool) -> bool:
-    """Whether a speech stream leaving with ``error`` (``None`` for its end) owes a usage: Gate received it and did not refuse it."""
+
+def _media_stream_owes_usage(error: BaseException | None, *, delivered: bool) -> bool:
+    """Whether a media stream leaving with ``error`` (``None`` for its end) owes a usage: Gate received it and did not refuse it."""
     if isinstance(error, LLMTimeoutError):
         return not timed_out_unsent(error)
     return error is None or isinstance(error, (GeneratorExit, asyncio.CancelledError)) or delivered
+
+
+def _image_stream_owes_usage(error: BaseException | None, *, reported: bool, delivered: bool) -> bool:
+    """Whether an image stream leaving with ``error`` owes a usage: Gate's report, else as any media stream, but an end needs an image.
+
+    An image stream that ends with no image is one Gate failed before any, and billed nothing.
+    """
+    if reported:
+        return True
+    if error is None:
+        return delivered
+    return _media_stream_owes_usage(error, delivered=delivered)
 
 
 class AudioGenRequestBuilder(MediaBuilder[BaseAudioResponse]):
@@ -1730,8 +1811,7 @@ class AudioGenRequestBuilder(MediaBuilder[BaseAudioResponse]):
         await self._gate_budget()
         call_id = self._next_call_id()
         request = self.request.model_copy(update={"model": model, "call_id": call_id})
-        with _naming_failures(call_id):
-            response = await self.client._send_audio_gen(request)  # noqa: SLF001
+        response = await self._sent(request, self.client._send_audio_gen(request))  # noqa: SLF001
         response.usage.call_id = call_id
         await self._fire(response)
         return response
@@ -1751,8 +1831,7 @@ class VideoRequestBuilder(MediaBuilder[VideoResponse]):
         await self._gate_budget()
         call_id = self._next_call_id()
         request = self.request.model_copy(update={"model": model, "call_id": call_id})
-        with _naming_failures(call_id):
-            response = await self.client._send_video(request)  # noqa: SLF001
+        response = await self._sent(request, self.client._send_video(request))  # noqa: SLF001
         response.usage.call_id = call_id
         await self._fire(response)
         return response
@@ -1780,8 +1859,8 @@ class DirectRequestBuilder[ResponseT: LLMCallRecord](MediaBuilder[ResponseT]):
         await self._gate_budget()
         call_id = self._next_call_id()
         request = self.request.model_copy(update={"model": model, "call_id": call_id})
-        with _naming_failures(call_id):
-            response = await self.client._post_json(self.path, request, self.label, client_timeout=self.client_timeout)  # noqa: SLF001
+        send = self.client._post_json(self.path, request, self.label, client_timeout=self.client_timeout)  # noqa: SLF001
+        response = await self._sent(request, send)
         parsed = self.response_type.model_validate(response.json())
         parsed.usage.call_id = call_id
         await self._fire(parsed)

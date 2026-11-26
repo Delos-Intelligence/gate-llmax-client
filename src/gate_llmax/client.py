@@ -19,7 +19,7 @@ from pydantic import BaseModel
 
 from gate_llmax.byok import BYOK_PLAN_HEADER, byok_plan_hook
 from gate_llmax.ids import CALL_ID_HEADER, new_call_id
-from gate_llmax.metering import UNSENT_TIMEOUTS, ListPrice, MeteredStream, PriceCache, StreamMeter
+from gate_llmax.metering import UNSENT_TIMEOUTS, ImagePrice, ListPrice, MeteredStream, PriceCache, StreamMeter
 from gate_llmax.models.audio import AudioRequest, AudioResponse
 from gate_llmax.models.audio_gen import AudioGenMode, AudioGenRequest, AudioGenResponse, AudioMode, DialogueTurn
 from gate_llmax.models.audio_isolation import AudioIsolationRequest, AudioIsolationResponse
@@ -1141,13 +1141,13 @@ class LLMClient:
         return await self._prices.get(model, plan, self._fetch_list_price)
 
     async def _fetch_list_price(self, model: str, plan: str | None) -> ListPrice:
-        """GET /v1/models/{model}: the price Gate lists ``model`` at. A group is priced as the model it serves on ``plan``."""
+        """GET /v1/models/{model}: the prices Gate lists ``model`` at, an image's too. A group is priced as what it serves on ``plan``."""
         response = await self._http.get(
             f"/v1/models/{quote(model, safe='')}", params={"plan": plan} if plan else None, timeout=PRICE_FETCH_TIMEOUT
         )
         _raise_for_status(response)
         info = ModelInfo.model_validate(response.json())
-        return ListPrice(input=info.input_token_price, output=info.output_token_price)
+        return ListPrice(input=info.input_token_price, output=info.output_token_price, image=ImagePrice.of(info))
 
     async def preload_catalog(self) -> None:
         """Warm the cached ``/v1/models`` snapshot that ``model_attributes()`` reads, so later lookups do no I/O."""

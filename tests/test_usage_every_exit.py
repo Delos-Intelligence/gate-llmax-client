@@ -1,4 +1,4 @@
-"""Every dispatch fires exactly one usage however it ends: Gate's report summed over the legs it reported, else a priced estimate.
+"""Every dispatch fires exactly one usage however it ends: Gate's report (any leg it missed estimated apart), else a priced estimate.
 
 Self-contained — a MockTransport stands in for the gateway: it answers chat requests from a script
 and list prices from a table, and records the call id of every chat request and every price lookup.
@@ -31,6 +31,7 @@ from gate_llmax import (
 )
 from gate_llmax.client import STREAM_INTERRUPTED
 from gate_llmax.fake import FakeClient
+from gate_llmax.metering import ListPrice
 from gate_llmax.models.response import ROUND
 from gate_llmax.tokens import count_text, estimate_input_tokens
 
@@ -1215,6 +1216,260 @@ async def test_a_refused_speech_stream_fires_nothing(status: int) -> None:
     assert usages.seen == []
 
 
+# --- the image stream: Gate prices images from the catalog's media price, and sends its usage last -
+
+IMAGE_PRICE = {"by_quality": {"medium": 0.04, "high": 0.17}}
+
+
+def priced_images(request: httpx.Request) -> httpx.Response:
+    """Gate's catalog for an image model: no token price, 0.04 USD a medium image and 0.17 a high one."""
+    name = unquote(request.url.path.removeprefix("/v1/models/"))
+    return httpx.Response(200, json={**model_info(name, (0.0, 0.0)), "extra_attributes": {"media_price": IMAGE_PRICE}})
+
+
+def image() -> bytes:
+    return sse({"b64": "aGk="})
+
+
+def image_usage() -> bytes:
+    return sse({"usage": {"model": "img", "input_tokens": 1, "input_cost": 0.04, "api_provider": "openai"}})
+
+
+async def test_a_completed_image_stream_fires_gate_s_usage_once() -> None:
+    gate = Gate(scripted(stream(image(), image(), image_usage())))
+    client, usages = make_client(gate)
+    responses: list[Any] = []
+
+    async def keep(response: Any) -> None:
+        responses.append(response)
+
+    frames = [f async for f in client.image("a cat", operation="t").callback(keep).call_stream("img")]
+
+    assert len(frames) == 2
+    assert not usages.one.estimated
+    assert (usages.one.input_tokens, usages.one.total_cost) == (1, 0.04)
+    assert usages.one.call_id == gate.ids[0]
+    assert [r.usage for r in responses] == [usages.one]
+    assert gate.lookups == []
+
+
+async def test_an_image_stream_its_caller_leaves_fires_one_estimate_at_the_media_price() -> None:
+    gate = Gate(scripted(stream(image(), image(), end="hang")))
+    gate.price_reply = priced_images
+    client, usages = make_client(gate)
+
+    await read_then_close(client.image("a cat", quality="high", operation="t").stream().call("img"))
+
+    # Fired by aclose() itself: the images asked for, as Gate counts and prices them (high quality: 2 units, 0.17 USD).
+    usage = usages.one
+    assert usage.estimated
+    assert (usage.input_tokens, usage.input_cost, usage.output_cost) == (2, 0.17, 0.0)
+    assert usage.call_id == gate.ids[0]
+
+
+async def test_an_image_stream_left_without_a_media_price_fires_its_estimate_at_cost_0() -> None:
+    gate = Gate(scripted(stream(image(), end="hang")), prices={"img": (2.5, 10.0)})
+    client, usages = make_client(gate)
+
+    await read_then_close(client.image("a cat", operation="t").call_stream("img"))
+
+    assert usages.one.estimated
+    assert (usages.one.input_tokens, usages.one.total_cost) == (1, 0.0)
+
+
+async def test_a_cancelled_image_stream_fires_one_estimate() -> None:
+    gate = Gate(scripted(stream(image(), end="hang")))
+    gate.price_reply = priced_images
+    client, usages = make_client(gate)
+    started = asyncio.Event()
+
+    async def consume() -> None:
+        async for _ in client.image("a cat", operation="t").call_stream("img"):
+            started.set()
+
+    task = asyncio.create_task(consume())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert usages.one.estimated
+    assert usages.one.input_cost == 0.04
+
+
+@pytest.mark.parametrize(
+    ("reply", "billed"),
+    [(time_out, (0, 0.0)), (lambda: stream(image(), end="timeout"), (1, 0.04))],
+    ids=["before-any-image", "after-an-image"],
+)
+async def test_an_image_stream_timing_out_fires_one_estimate_and_raises(
+    reply: Callable[[], httpx.Response], billed: tuple[int, float]
+) -> None:
+    gate = Gate(scripted(reply))
+    gate.price_reply = priced_images
+    client, usages = make_client(gate)
+
+    with pytest.raises(LLMTimeoutError) as raised:
+        [f async for f in client.image("a cat", operation="t").call_stream("img")]
+
+    # Gate bills an image stream once it produced an image, nothing before.
+    assert usages.one.estimated
+    assert (usages.one.input_tokens, usages.one.input_cost) == billed
+    assert usages.one.call_id == raised.value.call_id == gate.ids[0]
+
+
+async def test_an_image_stream_ending_without_gate_s_usage_fires_a_priced_estimate() -> None:
+    gate = Gate(scripted(stream(image())))
+    gate.price_reply = priced_images
+    client, usages = make_client(gate)
+
+    [f async for f in client.image("a cat", operation="t").call_stream("img")]
+
+    assert usages.one.estimated
+    assert (usages.one.input_tokens, usages.one.input_cost) == (1, 0.04)
+
+
+async def test_an_image_stream_gate_failed_before_any_image_fires_nothing_but_still_answers_its_callbacks() -> None:
+    gate = Gate(scripted(stream(sse({"error": {"message": "upstream died", "code": 502}}))))
+    client, usages = make_client(gate)
+    responses: list[Any] = []
+
+    async def keep(response: Any) -> None:
+        responses.append(response)
+
+    assert [f async for f in client.image("a cat", operation="t").callback(keep).call_stream("img")] == []
+
+    assert usages.seen == []
+    assert [r.data for r in responses] == [[]]
+
+
+@pytest.mark.parametrize("error", UNSENT, ids=lambda error: error.__name__)
+async def test_an_image_stream_gate_never_received_fires_nothing(error: type[httpx.TransportError]) -> None:
+    gate = Gate(scripted(partial(refuse, error)))
+    client, usages = make_client(gate)
+
+    with pytest.raises(UNSENT[error]):
+        [f async for f in client.image("a cat", operation="t").call_stream("img")]
+
+    assert usages.seen == []
+    assert gate.lookups == []
+
+
+@pytest.mark.parametrize("status", [404, 503])
+async def test_a_refused_image_stream_fires_nothing(status: int) -> None:
+    gate = Gate(scripted(httpx.Response(status, json={"detail": "no"})))
+    client, usages = make_client(gate)
+
+    with pytest.raises((LLMModelNotFoundError, LLMServerError)):
+        [f async for f in client.image("a cat", operation="t").call_stream("img")]
+
+    assert usages.seen == []
+
+
+# --- buffered media calls: Gate runs them to the end, so one it received but never answered is estimated
+
+# Calls the client knows no price for: their estimate fires at cost 0.
+UNPRICED: dict[str, Callable[[LLMClient], Awaitable[Any]]] = {
+    "video": lambda client: client.video("a cat", operation="t").call("m"),
+    "music": lambda client: client.audio("music", prompt="jazz", operation="t").call("m"),
+    "embed": lambda client: client.embed("hello", operation="t").call("m"),
+    "transcribe": lambda client: client.transcribe("aGk=", operation="t").call("m"),
+}
+
+
+async def test_an_image_call_timing_out_fires_an_estimate_of_the_images_asked_for() -> None:
+    gate = Gate(scripted(time_out))
+    gate.price_reply = priced_images
+    client, usages = make_client(gate)
+
+    with pytest.raises(LLMTimeoutError) as raised:
+        await client.image("a cat", n=2, operation="t").call("img")
+
+    assert usages.one.estimated
+    assert (usages.one.input_tokens, usages.one.input_cost) == (2, 0.08)
+    assert usages.one.call_id == raised.value.call_id == gate.ids[0]
+
+
+@pytest.mark.parametrize("error", [httpx.ReadError, httpx.RemoteProtocolError], ids=lambda error: error.__name__)
+async def test_an_image_call_losing_its_connection_fires_an_estimate(error: type[httpx.TransportError]) -> None:
+    gate = Gate(scripted(partial(refuse, error)))
+    gate.price_reply = priced_images
+    client, usages = make_client(gate)
+
+    with pytest.raises(error):
+        await client.image("a cat", operation="t").call("img")
+
+    assert usages.one.estimated
+    assert usages.one.input_cost == 0.04
+
+
+async def test_a_cancelled_image_call_fires_an_estimate() -> None:
+    async def never() -> httpx.Response:
+        await asyncio.sleep(3600)
+        raise AssertionError
+
+    gate = Gate(scripted(never))
+    gate.price_reply = priced_images
+    client, usages = make_client(gate)
+
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.05):
+            await client.image("a cat", operation="t").call("img")
+
+    assert usages.one.estimated
+    assert usages.one.input_cost == 0.04
+
+
+async def test_a_speech_call_timing_out_fires_a_priced_estimate_of_its_text() -> None:
+    gate = Gate(scripted(time_out))
+    client, usages = make_client(gate)
+
+    with pytest.raises(LLMTimeoutError):
+        await client.audio("speech", text=SPEECH, operation="t").call("m")
+
+    assert_speech_estimate(usages.one)
+    assert usages.one.call_id == gate.ids[0]
+
+
+@pytest.mark.parametrize("media", UNPRICED)
+async def test_a_media_call_timing_out_fires_an_estimate_at_cost_0(media: str) -> None:
+    gate = Gate(scripted(time_out))
+    client, usages = make_client(gate)
+
+    with pytest.raises(LLMTimeoutError):
+        await UNPRICED[media](client)
+
+    assert usages.one.estimated
+    assert usages.one.total_cost == 0.0
+    assert usages.one.call_id == gate.ids[0]
+
+
+@pytest.mark.parametrize("error", UNSENT, ids=lambda error: error.__name__)
+@pytest.mark.parametrize("media", ["image", *UNPRICED])
+async def test_a_media_call_gate_never_received_fires_nothing(media: str, error: type[httpx.TransportError]) -> None:
+    gate = Gate(scripted(partial(refuse, error)))
+    client, usages = make_client(gate)
+    call = UNPRICED.get(media, lambda client: client.image("a cat", operation="t").call("img"))
+
+    with pytest.raises(UNSENT[error]):
+        await call(client)
+
+    assert usages.seen == []
+
+
+@pytest.mark.parametrize("status", [404, 503])
+@pytest.mark.parametrize("media", ["image", *UNPRICED])
+async def test_a_refused_media_call_fires_nothing(media: str, status: int) -> None:
+    gate = Gate(scripted(httpx.Response(status, json={"detail": "no"})))
+    client, usages = make_client(gate)
+    call = UNPRICED.get(media, lambda client: client.image("a cat", operation="t").call("img"))
+
+    with pytest.raises((LLMModelNotFoundError, LLMServerError)):
+        await call(client)
+
+    assert usages.seen == []
+
+
 # --- the list price -------------------------------------------------------------------------------
 
 
@@ -1291,7 +1546,7 @@ async def test_a_slow_price_does_not_hold_the_exit(monkeypatch: pytest.MonkeyPat
     assert usages.one.total_cost == 0.0
     release.set()
     await asyncio.sleep(0.01)  # the lookup finishes in the background, for the next exit
-    assert await client._list_price("m", None) == PRICES["m"]
+    assert await client._list_price("m", None) == ListPrice(*PRICES["m"])
 
 
 # --- usage_chunks=True and the fake client --------------------------------------------------------
